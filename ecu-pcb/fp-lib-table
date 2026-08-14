@@ -1,0 +1,6 @@
+(fp_lib_table
+	(version 7)
+	(lib (name "TI_RNX0012C_VQFN-HR") (type "KiCad") (uri "${KIPRJMOD}/footprints/TI_RNX0012C_VQFN-HR.pretty") (options "") (descr "TI VQFN-HR-12 (RNX0012C) for LMR33630-Q1 - copied directly from manifold-pcb, same real part/footprint"))
+	(lib (name "TE_AMPSEAL_776180-1") (type "KiCad") (uri "${KIPRJMOD}/footprints/TE_AMPSEAL_776180-1.pretty") (options "") (descr "TE Connectivity AMPSEAL 776180-1, 35-pos right-angle PCB header - copied directly from manifold-pcb, same real part/footprint, dimensionally verified there against TE's own drawing"))
+	(lib (name "rusefi") (type "KiCad") (uri "${KIPRJMOD}/footprints/rusefi.pretty") (options "") (descr "L9779WD-SPI (HiQUAD-64) footprint sourced from rusEFI's own maintained KiCad library (github.com/rusefi/kicad6-libraries) - the real MC33810 replacement, MC33810 hit Last Time Buy 2027-04-30. Cross-checked against ST DocID027721 Rev 2's own mechanical Table 58: real pad pitch 0.65mm matches exactly, real exposed pad (EPAD) present, all 64 real pad names match Table 2's pin names."))
+)

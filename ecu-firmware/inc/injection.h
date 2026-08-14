@@ -15,12 +15,13 @@
  *     corrected for battery voltage (injector dead time genuinely varies
  *     with supply voltage - this is real, not a nicety; it's exactly why
  *     the board has a dedicated VBATT_ADC channel, see ecu_pins.h) and
- *     for coolant temp during warm-up enrichment (the real raw-count ->
- *     degrees-F conversion for this board's GM-style resistive CLT
- *     sending unit is done, see clt_sensor.h - not yet consumed here,
- *     since warm-up enrichment's own correction curve is real engine-
- *     specific tuning data, same "needs a running engine, not planned in
- *     detail yet" boundary as the VE/dwell tables above).
+ *     for coolant temp during warm-up enrichment, and IAT for air-
+ *     density correction (the real raw-count -> degrees-F conversions
+ *     for this board's real GM-style resistive CLT/IAT sensors are
+ *     both done, see clt_sensor.h/iat_sensor.h - neither consumed here
+ *     yet, since both correction curves are real engine-specific tuning
+ *     data, same "needs a running engine, not planned in detail yet"
+ *     boundary as the VE/dwell tables above).
  *   - Dwell time (ignition) from a dwell table vs. battery voltage and
  *     RPM, with the MC33810's own max-dwell protection as a hardware
  *     backstop, not the primary limit.

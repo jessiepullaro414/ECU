@@ -573,6 +573,36 @@ explicit rather than blurred.
   wired into engine-control logic (warm-up enrichment) — that's real
   engine-specific tuning data, same "needs a running engine" boundary as
   the VE/dwell tables, see `injection.h`'s own note.
+- **Real IAT (intake air temperature) sensor driver**
+  ([`inc/iat_sensor.h`](inc/iat_sensor.h), [`src/iat_sensor.c`](src/iat_sensor.c))
+  — same session, same real part swap for the board's IAT sensor
+  (DIYAutoTune's "GM Open Element IAT Temperature Sensor"). Real, honest
+  discrepancy found and resolved while sourcing it, not glossed over:
+  the IAT product page's own published 3-point curve shares its first
+  two resistance values EXACTLY with CLT's own curve (100.7kΩ@-40°F,
+  2.24kΩ@86-87°F) but disagrees on the third point's temperature for the
+  identical 177Ω reading (146°F here vs. CLT's 210.2°F) — two genuinely
+  different real sensors can't both be right about that. Real evidence
+  this is copy-paste content contamination on DIYAutoTune's own IAT
+  page, not two authentic curves: a leftover sentence on the IAT page
+  itself calls it a "closed-element sensor" despite the product being
+  titled/featured as open-element, and taking 146°F at face value would
+  imply a per-segment NTC Beta more than 2x CLT's own for the shared
+  -40..87°F segment (~7900K vs. ~3800K) — physically implausible for one
+  real thermistor, versus CLT's own internally-consistent ~8% spread.
+  Conclusion: genuinely the same underlying GM-pattern thermistor
+  element as CLT, different physical package (open element for air vs.
+  closed/NPT for liquid) — `iat_sensor.c` reuses CLT's own
+  already-cross-checked curve rather than the IAT page's likely-
+  erroneous 146°F figure (kept, separately, as `IAT_RATED_MAX_TENTHF` —
+  DIYAutoTune's real stated max operating temp for this specific
+  package, an honest fact worth keeping even though it's not used as a
+  second clamp). R24=4.22kΩ (E96), deliberately different sizing from
+  CLT's R25=1.00kΩ: IAT genuinely swings across nearly its whole real
+  range in normal use (cold-soak to hot under-hood air), unlike
+  thermostatically-regulated coolant, so it's sized via geometric-mean
+  (sqrt(177Ω × 100.7kΩ) ≈ 4.22kΩ) for resolution across the full span
+  rather than centered on one narrow sub-range.
 - **Real watchdog (SWT) driver, closing a standing TODO** ([`inc/swt.h`](inc/swt.h),
   [`src/swt.c`](src/swt.c)) — a whole new, previously-untouched chapter
   (Chapter 33, "Software Watchdog Timer", 9 self-contained pages) read

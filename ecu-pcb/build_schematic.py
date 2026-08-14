@@ -1681,15 +1681,53 @@ place(f"{LIB}:C_V", "C34", "22nF TPS RC filter (AEC-Q200)", 730, 1420,
 # exact 3 real points) lives in ecu-firmware/inc/clt_sensor.h - not a
 # TODO, already implemented.
 #
-# IAT (R24/C35): still a generic NTC pull-up pending a real IAT-specific
-# sensor choice (a real intake-air sensor is physically/electrically a
-# different part than a liquid-immersion coolant sending unit, even
-# though both are NTC thermistors - not swapped here, out of scope for
-# this pass) - only the +5V->+3V3 rail bug above was fixed, value/curve
-# still a placeholder ("typical - confirm").
-place(f"{LIB}:R_V", "R24", "2.2k IAT pull-up (AEC-Q200, typical - confirm)", 760, 1400,
+# IAT (R24/C35): real part swap too, same session, same reasoning as
+# CLT above. This board now uses DIYAutoTune's "GM Open Element IAT
+# Temperature Sensor" (https://diyautotune.com/products/iat-sensor,
+# cross-checked against a second, independent DIYAutoTune URL for the
+# same real product - both fetched live this session, matching). REAL,
+# HONEST DISCREPANCY FOUND AND RESOLVED, not glossed over: this page's
+# own published 3-point curve is -40F=100700ohm/87F=2238ohm/146F=177ohm
+# - the SAME two resistance values (100700/2238) CLT's own page
+# publishes at (-40F/86F), but the THIRD point's TEMPERATURE differs
+# (146F here vs CLT's 210.2F) for the SAME 177ohm resistance reading,
+# which can't both be true of two genuinely different real R-T curves.
+# Real evidence this is a copy-paste artifact on DIYAutoTune's own IAT
+# page, not two authentically different sensors: (1) the IAT page's own
+# product description text contains a leftover sentence calling it a
+# "closed-element sensor" despite the product being titled/featured as
+# open-element - direct evidence of copied content from the CLT page;
+# (2) taking 146F at face value implies a per-segment NTC Beta constant
+# more than 2x CLT's own (~7900K vs ~3800K for the -40..87F segment) -
+# physically implausible for two segments of one real thermistor, versus
+# CLT's own internally-consistent ~8% segment-to-segment Beta spread.
+# Real conclusion: this is genuinely the same underlying GM-pattern
+# thermistor element as CLT (same real resistance values at the same
+# two lower anchor temperatures), just a different physical package
+# (open element for air vs. closed/NPT for liquid) - so this board's IAT
+# firmware conversion (ecu-firmware/inc/iat_sensor.h) reuses CLT's own
+# already-cross-checked -40F/86F/210.2F curve rather than the IAT page's
+# likely-erroneous 146F figure. DIYAutoTune's own 146F IS kept as a real,
+# separate, honestly-documented fact though - their real stated MAX
+# RATED OPERATING TEMP for the open-element package specifically
+# (plausibly a genuine mechanical/thermal limit of that housing, not a
+# curve error) - noted in iat_sensor.h, not used as a second clamp,
+# since real intake air temperatures essentially never approach the
+# curve's own high end in practice anyway.
+#
+# R24=4.22k (E96) is deliberately NOT the same 1.00k as CLT's R25: IAT
+# genuinely swings across nearly its FULL real range in normal use
+# (ambient cold-soak to hot under-hood/boost air), unlike coolant (which
+# is thermostatically regulated to a narrow band once warm) - so R24 is
+# sized via the standard geometric-mean rule (sqrt(R_min * R_max) =
+# sqrt(177 * 100700) ~= 4222 ohm) to maximize ADC resolution across the
+# sensor's WHOLE calibrated span, not centered on one narrow sub-range
+# the way CLT's R25 deliberately is. C35 bumped 10nF->100nF to match
+# CLT's C36 (same real smoothing-cap reasoning, larger pull-up here
+# doesn't change the argument for it).
+place(f"{LIB}:R_V", "R24", "4.22k IAT pull-up (AEC-Q200) - real GM-style open-element sensor, geometric-mean sizing across its full range", 760, 1400,
       conn={'1': ('pwr', '+3V3'), '2': ('label', 'IAT_ADC')})
-place(f"{LIB}:C_V", "C35", "10nF IAT filter (AEC-Q200)", 760, 1420,
+place(f"{LIB}:C_V", "C35", "100nF IAT filter (AEC-Q200) - matches CLT's C36", 760, 1420,
       conn={'1': ('label', 'IAT_ADC'), '2': ('pwr', 'GND')})
 place(f"{LIB}:R_V", "R25", "1.00k CLT pull-up (AEC-Q200) - real GM-style sending unit, same sizing as thermo-pcb's R12", 790, 1400,
       conn={'1': ('pwr', '+3V3'), '2': ('label', 'CLT_ADC')})

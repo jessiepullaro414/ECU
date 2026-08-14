@@ -214,10 +214,25 @@ same rigor as Manifold's parts research:
     pull-ups were wired to +5V, but this MCU has no separate ADC
     reference pins — the ADC domain genuinely runs at 3.3V, so a cold
     sensor (high resistance) could have pulled the pin close to 5V, over
-    the 3.3V-domain rating. Both now pull up to +3V3. IAT itself is
-    still a generic NTC placeholder (a real intake-air sensor is a
-    different physical part from a coolant sending unit) — only its
-    rail was fixed, not its curve/value.
+    the 3.3V-domain rating. Both now pull up to +3V3. **IAT is now a
+    real, specific part too**: DIYAutoTune's GM Open Element IAT
+    Temperature Sensor. Real, honest discrepancy found and resolved
+    while sourcing it (full reasoning inline in `build_schematic.py`
+    above R24's registration, and in `ecu-firmware/inc/iat_sensor.h`):
+    the IAT product page's own published third calibration point
+    (146°F at 177Ω) conflicts with CLT's page (210.2°F at the identical
+    177Ω) for what's evidently the same underlying GM-pattern thermistor
+    element (identical resistance values at both lower anchor points,
+    plus a leftover "closed-element" sentence found directly on the IAT
+    page's own description text) — concluded to be copy-paste content
+    contamination on DIYAutoTune's own site, not two genuinely different
+    curves, so the firmware reuses CLT's own cross-checked curve for
+    IAT's conversion. R24=4.22kΩ (E96) — deliberately different sizing
+    from CLT's 1.00kΩ: IAT genuinely swings across nearly its whole real
+    range in normal use (cold-soak to hot under-hood air), unlike
+    thermostatically-regulated coolant, so it's sized via geometric-mean
+    (sqrt(177Ω × 100.7kΩ) ≈ 4.22kΩ) for resolution across the full span
+    rather than centered on one narrow sub-range.
   - **Knock:** 2x TI TLV2372-Q1 front ends (one per bank).
   - **Wideband O2:** 2x Bosch CJ125 + external heater MOSFET (one per
     bank), both on the shared SPI bus.

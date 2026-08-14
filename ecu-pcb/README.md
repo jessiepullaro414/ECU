@@ -541,8 +541,9 @@ the same way Manifold was built up subsystem by subsystem:
     numbering the schematic had used. Both fixed with real replacement
     parts/pin mappings (Schrack RT1-16A-FormC relay — real PCB-mountable
     part, though only 16A-rated against a ~22-28A realistic worst case,
-    honestly flagged as a follow-up; real Amphenol 12401610E4-2A pin
-    map). **Routing is done**: FreeRouting (same DSN/SES pipeline
+    honestly flagged as a follow-up **and since genuinely closed** — see
+    "Known open items", K1 is now a 40 A Panasonic CB1a-T-P-12V; real
+    Amphenol 12401610E4-2A pin map). **Routing is done**: FreeRouting (same DSN/SES pipeline
     Manifold proved out, scaled to 158 real nets — 3.4x Manifold's 47)
     reached 0 unrouted on both attempts, in ~3 minutes each. Real
     `kicad-cli pcb drc` verification (not just trusting FreeRouting's own
@@ -625,10 +626,31 @@ step that surfaced it.
 
 **Blocking fab:**
 - **No distributor-verified BOM.** The last real step.
-- **K1 relay is undersized.** Schrack RT1-16A-FormC is 16 A; the real
-  worst-case combined injector + ignition draw is ~22-28 A. Needs a
-  higher-current PCB relay, or splitting into two relays (one per
-  F3/F4 branch), before fab.
+- ~~**K1 relay is undersized.**~~ **RESOLVED.** The Schrack
+  RT1-16A-FormC was 16 A against a 30 A main fuse and a real ~22-28 A
+  switched load. Replaced with **Panasonic CB1a-T-P-12V**: a real
+  automotive PCB relay, 1 Form A (SPST-NO), **40 A @ 14 V DC** nominal
+  switching capacity, 40 A continuous carry at 85 °C, 2 mΩ contacts,
+  12 V / 117 mA coil, sealed, and — critically — the `-T` heat-resistant
+  variant rated **−40 to +125 °C** rather than the standard type's
+  +85 °C. 40 A now comfortably exceeds F1's 30 A, so the *fuse* is the
+  weakest link in the switched path rather than the relay, which is the
+  correct way round. Splitting into two relays was considered and
+  rejected: it would not have helped, because the ignition branch alone
+  (F4, 25 A fuse, ~14-20 A real draw) already exceeds a 16 A relay.
+  No bundled KiCad footprint could be used — every `Relay_THT`
+  footprint was checked programmatically, and the only ≥30 A one with
+  real pads is an EV/solar part rated to just +85 °C. Worth recording:
+  **both** Potter&Brumfield "12V30A" footprints self-describe as
+  `Dummy for Space NO Pads`, so the trap that bit this project once
+  (see the T9AP5D52 story below) applies to the SPST variant too, not
+  only the SPDT one. The footprint is therefore hand-built by
+  [`build_k1_footprint.py`](build_k1_footprint.py) from Panasonic's own
+  datasheet PC-board-pattern drawing, with the full derivation in that
+  script's docstring. Two knock-on effects were checked rather than
+  assumed: the coil's real 117 mA (up from the Schrack's ~40 mA class)
+  is comfortably within Q2's and D2's ratings, and the relay's real
+  1 A minimum switching capacity is satisfied many times over.
 
 **Remaining functional gaps:**
 - **No per-channel diagnostics on the actuator outputs.** They are

@@ -453,24 +453,46 @@ register_symbol(f"{LIB}:D_FLYBACK", "D", "TBD", "Diode_SMD:D_SOD-123",
 # 2 - closed now, the hard way, via build_pcb.py's own net-pin-count
 # check catching real vs. schematic pin-count mismatches (the same
 # mechanism Manifold's build_pcb.py was built around).
-# Real fix: switched to Schrack RT1-16A-FormC, a genuinely PCB-mountable
-# SPDT relay with a real bundled footprint and real numbered pins - but a
-# DIFFERENT real numbering convention (European/Schrack contact numbering:
-# 11=common, 12=NC, 14=NO; A1/A2=coil, no polarity), not the ISO 7588
-# automotive numbering (85/86/30/87) the wrong part had suggested.
-# KNOWN OPEN LIMITATION, honestly flagged not hidden: this part is real
-# but only 16A-rated, while the board's real combined injector+ignition
-# current (per step 2's own research) can reach ~22-28A - genuinely
-# undersized for the worst case. A dedicated higher-current real PCB
-# relay search (or splitting into two relays, one per F3/F4 branch) is
-# needed before fab; kept as-is for now so the board generates and
-# routes with a real, correctly-connected part while that follow-up
-# research happens separately.
+# First fix (superseded, kept for the real lesson): switched to Schrack
+# RT1-16A-FormC, a genuinely PCB-mountable SPDT relay with a real bundled
+# footprint and real numbered pins - but a DIFFERENT real numbering
+# convention (European/Schrack contact numbering: 11=common, 12=NC,
+# 14=NO; A1/A2=coil, no polarity), not the ISO 7588 automotive numbering
+# the wrong part had suggested. That part was only 16A-rated though,
+# against this board's own 30A main fuse (F1) and a real switched load
+# that can reach ~22-28A - honestly flagged as fab-blocking rather than
+# hidden, and now genuinely closed.
+#
+# REAL FIX (a later pass): Panasonic CB1a-T-P-12V, a real automotive PCB
+# relay - 1 Form A (SPST-NO), 40A @ 14V DC nominal switching capacity,
+# 40A continuous carry at 85C, 2 mOhm contacts, 12V/117mA coil, sealed,
+# and heat-resistant to -40..+125C. 40A now comfortably exceeds F1's own
+# 30A, so the FUSE is the weakest link in the switched path rather than
+# the relay, which is the correct way round. Full part-number decoding,
+# ratings, and the hand-built footprint's whole geometry derivation live
+# in build_k1_footprint.py's own docstring - including why no bundled
+# KiCad footprint could be used (every Relay_THT footprint was checked
+# programmatically: the only >=30A one with real pads is an EV/solar
+# part rated to just +85C, and BOTH Potter&Brumfield "12V30A" footprints
+# self-describe as "Dummy for Space NO Pads", confirming the same trap
+# documented above applies to the SPST variant too, not only the SPDT).
+#
+# Two real knock-on effects checked rather than assumed: the coil draws
+# a real 117mA (up from the Schrack's ~40mA class), which Q2/PMV230ENEA
+# drives comfortably and D2/PMEG4010BEA freewheels comfortably. And the
+# relay has a real MIN. switching capacity of 1A @ 14V DC - satisfied
+# many times over here, noted because it is a genuine spec.
+#
+# Pin numbering is now real ISO 7588 automotive (85/86 = coil, 30 =
+# common/input, 87 = normally-open output). 1 Form A has no 87a, which
+# loses nothing: the old SPDT part's NC contact was already wired
+# no_connect. Coil is non-polarized (the polarity-sensitive variant is
+# the separate "-R" built-in-resistor option, deliberately not used
+# since D2 already provides real external flyback).
 register_symbol(f"{LIB}:RELAY_ISO_MINI", "K", "TBD",
-                "Relay_THT:Relay_SPDT_Schrack-RT1-16A-FormC_RM5mm",
-                {'L': [P("A1", "COIL1", "passive"), P("A2", "COIL2", "passive")],
-                 'R': [P(11, "COM", "passive"), P(14, "NO", "passive"),
-                       P(12, "NC", "no_connect")]},
+                "panasonic:Panasonic_CB1a-T-P_Relay_40A",
+                {'L': [P(85, "COIL1", "passive"), P(86, "COIL2", "passive")],
+                 'R': [P(30, "COM", "passive"), P(87, "NO", "passive")]},
                 hide_pin_names=True)
 
 # 4-pin 3225 crystal, same real footprint/pin-redundancy pattern Manifold
@@ -1054,9 +1076,9 @@ place(f"{LIB}:R_V", "R3", "1k gate resistor (AEC-Q200)", 70, 205,
       conn={'1': ('label', 'RELAY_CTRL'), '2': ('label', 'RELAY_DRV')})
 place(f"{LIB}:D_FLYBACK", "D2", "PMEG4010BEA automotive (AEC-Q101)", 110, 230,
       conn={'1': ('label', 'RELAY_COIL_LO'), '2': ('label', 'VIN_PROT')})
-place(f"{LIB}:RELAY_ISO_MINI", "K1", "Schrack RT1-16A-FormC (16A - see registration note)", 160, 230,
-      conn={'A1': ('label', 'RELAY_COIL_LO'), 'A2': ('label', 'VIN_PROT'),
-            '11': ('label', 'VIN_PROT'), '14': ('label', 'VBATT_SW')})
+place(f"{LIB}:RELAY_ISO_MINI", "K1", "Panasonic CB1a-T-P-12V automotive relay (40A, -40..+125C) - see registration note", 160, 230,
+      conn={'85': ('label', 'RELAY_COIL_LO'), '86': ('label', 'VIN_PROT'),
+            '30': ('label', 'VIN_PROT'), '87': ('label', 'VBATT_SW')})
 # VBATT_INJ/VBATT_IGN are each single-occurrence (dangling) this session -
 # expected: they'll pick up real loads once injectors/coils and the
 # harness connectors exist (steps 4 and 9). MC33810 VPWR (step 4) will tap

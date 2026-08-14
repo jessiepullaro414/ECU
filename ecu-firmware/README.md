@@ -291,6 +291,29 @@ explicit rather than blurred.
   opening line: "They can drive IGBT Darlington transistors" — closing
   the real, previously-open question of whether it's a true drop-in
   match for MC33810's `GDx`.
+  **Update (later pass): a real hardware dependency this driver can
+  neither detect nor work around, worth knowing before debugging a
+  "firmware sends everything correctly but nothing fires" symptom.**
+  `IGN1-4`'s pre-drivers are supplied from the chip's own `VDD5` rail
+  (Table 28 lists `VDD5` 4.9-5.1 V as their supply voltage range and
+  specifies their short-to-battery detection thresholds relative to
+  it), and `VDD5` is a linear regulator that only exists if an
+  **external NMOS pass transistor** and an external charge-pump
+  capacitor are fitted — the feature list says "5 V precision voltage
+  regulator (±2%) with external NMOS", and Table 13 lists both as
+  *required* external components. Those were genuinely absent from
+  `ecu-pcb` until a later pass fitted them for real (`Q20`/`Q21` +
+  `C82`-`C87`) — before that, this board would have had no ignition
+  drive at all despite perfectly correct SPI and parallel-pin timing.
+  Two more real behaviors now documented in `l9779.h` because they
+  affect how firmware should interpret a dropout rather than what it
+  should write: the charge pump's real default is *conditional*, not
+  always-on (Section 6.7 — active below 12 V Ubat, or permanently via
+  the `capful` bit; the default is genuinely correct for this board and
+  needs no firmware action), and above a 28 V Ubat overvoltage it
+  "will be switched off automatically no matter the `cp_off` bit
+  status" — so ignition dropping out during a real load-dump excursion
+  is designed protection, not a fault to retry through.
   **Real, named gaps, not guessed:** the parity bit's own calculation
   isn't confirmed from the text read this session — every frame sends
   parity=0, a real placeholder; whether `DO`'s data is same-frame or

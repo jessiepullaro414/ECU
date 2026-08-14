@@ -366,10 +366,44 @@ the same way Manifold was built up subsystem by subsystem:
    confirmed equivalent (kept as a real, physically-wired-but-unused MCU
    pin — see `ecu-firmware/inc/ecu_pins.h`'s `PIN_DRV_OUTEN` comment);
    and the chip's real charge-pump (`CP`) and external-MOS-gate-supply
-   (`VDD_G`) pins are left unconnected pending the real application
-   circuit (Datasheet Figure 3, not yet read) — **without real support
-   components there, IGN1-4's own drive capability will not work
-   correctly**, a loud, not-cosmetic TODO. A real, genuine bug was found
+   (`VDD_G`) pins were left unconnected pending the real application
+   circuit. **RESOLVED (a later pass)** — Figure 3 and Table 13 were
+   genuinely read, and the gap turned out to be worse than the original
+   TODO wording suggested: `VDD5` is not an optional convenience output,
+   it is IGN1-4's own supply (Table 28 specifies their supply voltage
+   range as `VDD5` 4.9-5.1 V and their short-to-battery detection
+   thresholds relative to it), and `VDD5` cannot exist at all without an
+   external NMOS pass transistor — the feature list says "5 V precision
+   voltage regulator (±2%) with external NMOS" and Table 13 lists that
+   NMOS plus a 100 nF `CP` capacitor as *required* external components.
+   So the board as previously drawn would have had **no ignition drive
+   whatsoever**, not merely degraded drive. Now fitted for real, per
+   chip: `Q20`/`Q21` (external pass NMOS, D→VB, G←`VDD_G`, S→`VDD5`),
+   `C82`/`C83` (100 nF `CP`-to-VB charge-pump cap — a bootstrap/flying
+   cap between `CP` and VB, *not* to ground), `C84`/`C85` (10 µF
+   `VDD5`), `C86`/`C87` (1 µF `V3V3`). One real, honest sub-gap remains:
+   ST names `STD20NF06L` as its own "testing reference" NMOS and that's
+   what's used, but its AEC-Q101 status could not be confirmed — every
+   route to a real datasheet (st.com, onsemi, Mouser mirror) timed out
+   or returned a block page this session. Every other active part on
+   this board has a confirmed qualification, so this is tracked in
+   "Known open items", not quietly assumed. **Fitting these parts also
+   surfaced a second real defect in the same sourced rusEFI footprint,**
+   found only because the added components changed placement enough for
+   the router to run a GND track under it: an `fp_poly` on `F.Mask`
+   whose main body was *exactly* coincident with the `EPAD` pad's own
+   mask aperture (same ±4.8514 mm coordinates — pure duplication, since
+   the pad is already on `F.Mask` and generates that opening itself),
+   plus two ~2 mm tabs extending past the pad into areas with no pad at
+   all. Those tabs are a bare mask opening over whatever copper is
+   routed underneath — a real solder-bridge hazard at reflow, which is
+   exactly what `kicad-cli pcb drc` reported (`solder_mask_bridge`,
+   error severity, against both the routed GND track and `EPAD`
+   itself). Removed from the local footprint copy. This is the same
+   structural defect class as the `F.Cu` polygon already removed from
+   this footprint during the migration: KiCad's `.kicad_mod` format
+   binds nets only to `pad` objects, so a graphical polygon overlapping
+   netted copper can never pass DRC as authored. A real, genuine bug was found
    and fixed in the sourced footprint itself while verifying with
    `kicad-cli pcb drc`: a bare copper polygon on `F.Cu` with no way to
    carry a net (KiCad's `.kicad_mod` format only binds nets to `pad`
@@ -604,13 +638,33 @@ step that surfaced it.
   but each would have been a new unverified component, and this
   project's rule is that nothing ships unverified. Worth revisiting if
   fault reporting on these outputs becomes a requirement.
-- **No qualification confirmation for two of the newest parts.** The
+- **No qualification confirmation for three of the newest parts.** The
   AD8495 (EGT amp) and MC33926 (ETC H-bridge) are both the real,
   correct parts for their jobs — the MC33926's own datasheet title is
   literally "5.0 A Throttle Control H-Bridge" — but no AEC-Q100
   statement was found in either datasheet, unlike every other active
   part on this board. Flagged, not hidden; see "Sensors and actuators"
-  above.
+  above. The third is `Q20`/`Q21`, the L9779WD-SPI's external `VDD5`
+  pass NMOS: `STD20NF06L` is ST's own named "testing reference" part
+  from the datasheet's Table 13, but its AEC-Q101 status could not be
+  confirmed — st.com, onsemi and the Mouser mirror all timed out or
+  returned block pages this session. Before substituting a
+  confirmed-AEC-Q101 part, note the datasheet's own warning: "Others
+  N-MOSFET can be used provided that they have similar threshold
+  voltage and input capacitance; however regulator transient
+  performances may have deviation to be checked" — a substitute needs
+  matching V<sub>th</sub> *and* C<sub>iss</sub>, not just matching
+  voltage/current ratings, because it sits inside the regulator's own
+  control loop.
+- **`Q20`/`Q21` are linear pass elements and dissipate real power.**
+  `VDD5` is a linear regulator, so each NMOS burns (V<sub>B</sub> − 5 V)
+  × I<sub>load</sub> continuously — roughly 9.4 V × ~100 mA ≈ 1 W per
+  chip at a nominal 14.4 V, ~2 W across both. D2PAK was chosen over
+  this board's usual SOT-23 signal MOSFETs for exactly this reason, but
+  both tabs need real copper pour at layout. The datasheet also gives a
+  real placement constraint for the VB-side reservoir caps (`C19`/`C21`):
+  "The Cin capacitor on VB line should be put as close as possible to
+  the drain of external MOS."
 - **ETC plausibility checking is a firmware responsibility.** The board
   provides two independent sensors on the pedal (APP1/APP2) and two on
   the throttle body (TPS1/TPS2), plus two independent hardware disable

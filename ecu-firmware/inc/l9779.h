@@ -166,6 +166,37 @@
  *     schematic-wiring pass, not resolved here.
  *   - No local PowerPC-EABI toolchain exists this session to compile-
  *     check this file, same standing gap as every other driver here.
+ *
+ * REAL HARDWARE DEPENDENCY THIS DRIVER CANNOT DETECT OR WORK AROUND -
+ * worth knowing before debugging a "firmware sends everything correctly
+ * but nothing fires" symptom on real hardware (found a later pass, from
+ * the datasheet's own Figure 3, Table 13, Table 28 and Section 6.7):
+ *   - IGN1-4's pre-drivers are supplied from the chip's own VDD5 rail
+ *     (Table 28 lists VDD5 4.9-5.1V as their supply voltage range, and
+ *     specifies their SCB detection thresholds relative to VDD5). VDD5
+ *     is a linear regulator that only exists if an EXTERNAL NMOS pass
+ *     transistor and an external charge-pump capacitor are fitted -
+ *     "5 V precision voltage regulator (+/-2%) with external NMOS", and
+ *     Table 13 lists both as required external components. ecu-pcb now
+ *     fits them for real (Q20/Q21 + C82-C87); before that pass they
+ *     were genuinely absent, which would have meant no ignition drive
+ *     at all despite perfectly correct SPI + parallel-pin timing.
+ *   - The charge pump's real DEFAULT behavior is conditional, not
+ *     always-on (Section 6.7): it "could be active if the battery
+ *     supply voltage is smaller than 12 V or be permanently active by
+ *     setting the capful bit", and it provides "at least 5 V above
+ *     Ubat when Ubat is higher than 6 V". That default is genuinely
+ *     the sensible one for this board and needs no firmware action -
+ *     at a normal running 14.4V, Ubat alone already exceeds the pass
+ *     NMOS's own gate requirement, and the pump engages exactly when
+ *     it's actually needed (a cranking/low-battery sag). Documented
+ *     here so nobody later assumes the pump runs continuously, or
+ *     "fixes" a non-problem by setting capful.
+ *   - Real, deliberately-not-overridable behavior: once a Ubat
+ *     overvoltage is detected (VB_OV_th > 28V) "the charge pump will
+ *     be switched off automatically no matter the cp_off bit status".
+ *     So during a real load-dump excursion, ignition drive can drop
+ *     out by design - a hardware protection, not a fault to retry.
  */
 #ifndef L9779_H
 #define L9779_H

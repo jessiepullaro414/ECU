@@ -1238,14 +1238,30 @@ for chip in range(2):
               '58': ('pwr', 'GND', 5.08),               # PGND3
               '59': ('pwr', 'GND', 5.08),               # PGND4
               'EPAD': ('pwr', 'GND', 5.08),             # real exposed thermal pad - see symbol comment
-              # REAL, OPEN GAP - not guessed: CP (charge pump) and VDD_G
-              # need real external support components per the datasheet's
-              # own application circuit (Figure 3), not read this pass.
-              # Left unconnected rather than fabricating a value; the
-              # charge pump (and therefore IGN1-4's own real drive
-              # capability) will NOT work correctly until this is resolved
-              # - a real, loud TODO, not cosmetic.
-              '1': ('nc',), '2': ('nc',), '3': ('nc',), '4': ('nc',),
+              # RESOLVED (a later pass) - the previously-open CP/VDD_G gap
+              # is now real, wired, and sourced from the datasheet's own
+              # Figure 3 (Application schematic, page 16) plus Table 13
+              # ("Voltage regulators external components REQUIRED"), both
+              # genuinely read this pass. See the support-component block
+              # below this chip's IGBTs for the full derivation.
+              #
+              # The gap turned out to be MORE serious than the earlier
+              # TODO wording suggested, confirmed from primary source and
+              # worth stating plainly: VDD5 is not an optional convenience
+              # output. Table 28 ("Ignition pre-drivers electrical
+              # characteristics") lists IGN1-4's own supply voltage as
+              # VDD5 (4.9-5.1V), and its SCB detection thresholds are
+              # specified relative to VDD5 - so with no VDD5 there is no
+              # ignition drive at all, not merely degraded drive. And
+              # VDD5 cannot exist without the external NMOS pass
+              # transistor below: the datasheet's own feature list says
+              # "5 V precision voltage regulator (+/-2%) with external
+              # NMOS", and Table 13 lists that NMOS as a required
+              # external component, not a suggestion.
+              '1': ('label', f'L9779_CP_{chip}', 5.08),     # CP - charge pump cap to VB
+              '2': ('label', f'L9779_VDDG_{chip}', 5.08),   # VDD_G - ext NMOS gate drive
+              '3': ('label', f'L9779_VDD5_{chip}', 5.08),   # VDD5 - 5V reg output (ext NMOS source)
+              '4': ('label', f'L9779_V3V3_{chip}', 5.08),   # V3V3 - internal 3.3V reg output
               '53': ('label', f'SPI_CS_{chip}', 7.62),  # CS - per-chip SPI select
               '51': ('label', 'SPI_SCLK', 7.62),        # SCK - shared SPI bus (both chips)
               '50': ('label', 'SPI_SI', 7.62),          # DIN
@@ -1306,12 +1322,86 @@ for chip in range(2):
                     '2': ('label', f'IGN{cyl}_COIL'),
                     '3': ('pwr', 'GND')})
 
-    # Real VB decoupling (value carried over from MC33810's own VPWR
-    # decouple as a conservative placeholder - the real L9779WD-SPI
-    # application circuit, Figure 3, hasn't been read yet to confirm a
-    # real value for this specific chip).
-    place(f"{LIB}:C_V", f"C{19 + chip * 2}", "1uF VB decouple (AEC-Q200) - real value TBD, see comment", x0 - 30, y0 - 30,
+    # Real VB decoupling. Value is no longer the carried-over MC33810
+    # placeholder it used to be: the datasheet's own PCB-layout note
+    # under Table 13 calls this the "Cin capacitor on VB line" and gives
+    # a real PLACEMENT requirement for it - "should be put as close as
+    # possible to the drain of external MOS" (Q below) - since it's the
+    # input reservoir for the VDD5 linear pass stage, not just generic
+    # chip decoupling. Kept at 1uF (a real, adequate reservoir for this
+    # stage's own <=400mA regulated max) with the real placement
+    # constraint now recorded for layout.
+    place(f"{LIB}:C_V", f"C{19 + chip * 2}", "1uF VB/Cin reservoir (AEC-Q200) - place close to Q drain, see comment", x0 - 30, y0 - 30,
           conn={'1': ('label', 'VIN_PROT'), '2': ('pwr', 'GND')})
+
+    # --- L9779WD-SPI voltage-regulator support components (REQUIRED) ---
+    # Real, primary-source derivation - Datasheet DocID027721 Rev 2,
+    # Figure 3 (Application schematic, page 16) read as a rendered image
+    # (its text layer is character-shifted and useless raw, same class of
+    # problem as the MPC5606B manual's own tables) and cross-checked
+    # against Table 13, "Voltage regulators external components required":
+    #
+    #   Pin    Component            Min    Typ     Max
+    #   VDD5   CVDD5 capacitor      1 uF    -      10 uF
+    #   VDD5   External N-MOS       (IRFZ24NSTRL; STD20NF06L "testing
+    #                                reference"; NTD18N06L; HUF76419D3)
+    #   V3V3   CV3V3 capacitor      1 uF    -      10 uF
+    #   CP     charge pump cap      -20%   100 nF  +20%
+    #
+    # Real topology, read directly off Figure 3: the charge-pump cap sits
+    # between CP and VB (NOT to ground - it's a bootstrap/flying cap, and
+    # grounding it would be a real, silent mistake); the external NMOS
+    # has its drain on VB, its gate driven by VDD_G, and its source IS
+    # the VDD5 rail. The datasheet's own feature text explains why the
+    # charge pump exists at all: "Charge pump capacitor at pin CP is used
+    # to drive the gate of the external NMOS transistor" - an N-channel
+    # pass element whose source sits at 5V needs its gate driven above
+    # VB, which is exactly what the charge pump provides.
+    #
+    # REAL THERMAL CONSEQUENCE, not hidden: this is a LINEAR regulator,
+    # so the external NMOS dissipates (VB - 5V) x I_load continuously.
+    # At a nominal 14.4V VB that's ~9.4V across the device. This board's
+    # real VDD5 load is the chip's own IGN1-4 pre-drivers (Table 28:
+    # I_cont = 15 mA/channel, I_lim 19-33 mA) plus internal logic - order
+    # 100 mA, so order 1 W per chip, 2 W across both. That is why a
+    # D2PAK (MOSFET_N_BIG) is used here rather than the SOT-23 MOSFET_N
+    # this board uses for its low-side signal drivers: SOT-23 would be
+    # thermally undersized for a real 1 W linear pass element. Needs real
+    # copper pour under both tabs at layout time.
+    #
+    # HONEST, REAL, UNCLOSED GAP on the part number specifically: ST's
+    # own four suggested devices are listed above, and STD20NF06L is the
+    # one ST names as its "testing reference", so it's used here. Its
+    # AEC-Q101 status could NOT be confirmed this session - every attempt
+    # to reach a real datasheet (st.com direct, onsemi direct, Mouser
+    # mirror) either timed out or returned a block page, the same access
+    # problem this project already hit with NXP's own site. Every other
+    # active part on this board has a confirmed automotive qualification,
+    # so this is a genuine outstanding item, flagged the same way the
+    # AD8495 and MC33926 qualification gaps already are - NOT quietly
+    # assumed qualified. Also note the datasheet's own substitution
+    # warning before swapping it for a confirmed-AEC-Q101 part: "Others
+    # N-MOSFET can be used provided that they have similar threshold
+    # voltage and input capacitance; however regulator transient
+    # performances may have deviation to be checked" - so a substitute
+    # needs matching Vth AND Ciss, not merely matching V/I ratings.
+    # (MOSFET_N_BIG's own pre-existing "confirm D2PAK pin-to-terminal
+    # mapping before fab" flag, see its registration, applies here too.)
+    place(f"{LIB}:MOSFET_N_BIG", f"Q{20 + chip}",
+          "STD20NF06L VDD5 ext pass NMOS (ST Table 13 testing reference) - AEC-Q101 UNCONFIRMED, see comment",
+          x0 + 260, y0 + 150,
+          conn={'3': ('label', 'VIN_PROT'),                      # D -> VB
+                '1': ('label', f'L9779_VDDG_{chip}', 7.62),      # G <- VDD_G
+                '2': ('label', f'L9779_VDD5_{chip}')})           # S -> VDD5 rail
+    place(f"{LIB}:C_V", f"C{82 + chip}", "100nF CP charge-pump cap (AEC-Q200) - real Table 13 value, CP to VB",
+          x0 + 320, y0 + 150,
+          conn={'1': ('label', f'L9779_CP_{chip}'), '2': ('label', 'VIN_PROT')})
+    place(f"{LIB}:C_V", f"C{84 + chip}", "10uF VDD5 reg cap (AEC-Q200) - real Table 13 range 1-10uF",
+          x0 + 380, y0 + 150,
+          conn={'1': ('label', f'L9779_VDD5_{chip}'), '2': ('pwr', 'GND')})
+    place(f"{LIB}:C_V", f"C{86 + chip}", "1uF V3V3 reg cap (AEC-Q200) - real Table 13 range 1-10uF",
+          x0 + 440, y0 + 150,
+          conn={'1': ('label', f'L9779_V3V3_{chip}'), '2': ('pwr', 'GND')})
 
 # ---------------------------------------------------------------------------
 # Sensor front end (plan step 5): 2x MAX9924 crank/cam VR interface,

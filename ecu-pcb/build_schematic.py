@@ -797,7 +797,11 @@ MCU_USED[68] = P(68, "ADC0_P9_APP1", "input")      # accel pedal position 1 (ETC
 MCU_USED[69] = P(69, "ADC0_P10_APP2", "input")     # accel pedal position 2 (ETC, redundant)
 MCU_USED[70] = P(70, "ADC0_P11_TPS1", "input")     # throttle body position 1 (ETC)
 MCU_USED[71] = P(71, "ADC0_P12_TPS2", "input")     # throttle body position 2 (ETC, redundant)
-MCU_USED[78] = P(78, "ADC0_P13_EGT", "input")      # exhaust gas temperature
+MCU_USED[78] = P(78, "SPI_CS_EGT", "output")        # ADS1118-Q1 EGT ADC chip select
+                                                   # (was ADC0_P13_EGT - EGT moved from an analog
+                                                   # read to SPI, which freed this very pin for the
+                                                   # new device's CS; PD[9] is a real GPIO-capable
+                                                   # pad, already confirmed in ecu-firmware/siul2.c)
 MCU_USED[79] = P(79, "ADC0_P14_ETCIFB", "input")   # ETC H-bridge current feedback
 MCU_USED[139] = P(139, "E0UC22_ETC_IN1", "output") # ETC H-bridge input 1 (PWM)
 MCU_USED[140] = P(140, "E0UC23_ETC_IN2", "output") # ETC H-bridge input 2 (PWM)
@@ -1173,7 +1177,7 @@ place(f"{LIB}:MCU_MPC5606B", "U1", "NXP MPC5606B automotive (Qorivva, Power Arch
           '69': ('label', 'APP2_ADC', 7.62),
           '70': ('label', 'TPS1_ADC', 7.62),
           '71': ('label', 'TPS2_ADC', 7.62),
-          '78': ('label', 'EGT_ADC', 7.62),
+          '78': ('label', 'SPI_CS_EGT', 7.62),
           '79': ('label', 'ETC_IFB_ADC', 7.62),
           '139': ('label', 'ETC_IN1', 7.62),
           '140': ('label', 'ETC_IN2', 7.62),
@@ -2531,6 +2535,46 @@ register_symbol(f"{LIB}:AD8495", "U", "TBD", "Package_SO:MSOP-8_3x3mm_P0.65mm",
                  'R': [P(8, "+IN", "input"), P(7, "+VS", "power_in"),
                        P(6, "OUT", "output"), P(5, "SENSE", "input")]},
                 datasheet="https://www.analog.com/media/en/technical-documentation/data-sheets/ad8494_8495_8496_8497.pdf")
+# ^ AD8495 registration retained for its real pinout research only - it is
+# NO LONGER PLACED on this board. Superseded by the ADS1118-Q1 below.
+#
+# TI ADS1118-Q1, VSSOP-10 (TI package code DGS, NOT MSOP - confirmed from
+# TI's own Device Information table). Real, AEC-Q100 Grade 1 (-40..+125C)
+# 16-bit delta-sigma ADC with a PGA and an on-die temperature sensor.
+# Symbol, footprint and SPI mode (CPOL=0/CPHA=1) are all reused verbatim
+# from the sibling thermo-pcb project, where they were verified against
+# TI's own datasheet (SBAS740B) and the footprint hand-built from TI's
+# published DGS0010A land pattern - no reason to re-derive either.
+#
+# WHY THIS REPLACES THE AD8495 - a real qualification problem with no
+# part-swap answer. The AD8495 is the right FUNCTION but carries no
+# AEC-Q100 statement, and there is no automotive-qualified dedicated
+# thermocouple amplifier IC to swap it for: MAX31855, MAX31856, AD8495,
+# LTC2983 and MCP9600 were all checked (the last via a full primary-
+# source datasheet read) by the sibling thermo-pcb project, and
+# re-confirmed independently here. The only genuinely compliant path is
+# architectural: a real AEC-Q100 ADC reads the raw thermocouple
+# millivolts directly, and the cold-junction compensation plus NIST
+# ITS-90 K-type linearisation move into firmware. thermo-pcb hit this
+# exact tradeoff and its user chose real compliance over simpler
+# hardware; the same choice was made explicitly for this board.
+#
+# The on-die temperature sensor is what makes the CJC work without a
+# second part - TI's own literature documents it for exactly this use -
+# but it only reads a REAL cold-junction temperature if the device sits
+# physically close to the connector where the thermocouple wire meets
+# copper. That is a genuine PLACEMENT constraint (U19 near J5's EGT
+# pins), not a schematic one, and it is recorded in the README.
+register_symbol(f"{LIB}:ADS1118Q1", "U", "ADS1118-Q1",
+                "TI_DGS0010A_VSSOP-10:TI_DGS0010A_VSSOP-10_3x3mm_P0.5mm",
+                {'L': [P(1, "SCLK", "input"), P(2, "CS", "input"),
+                       P(10, "DIN", "input")],
+                 'R': [P(9, "DOUT", "output"), P(4, "AIN0", "passive"),
+                       P(5, "AIN1", "passive"), P(6, "AIN2", "no_connect"),
+                       P(7, "AIN3", "no_connect")],
+                 'T': [P(8, "VDD", "power_in")],
+                 'B': [P(3, "GND", "power_in")]},
+                datasheet="https://www.ti.com/lit/ds/symlink/ads1118-q1.pdf")
 
 # NXP/Freescale MC33926, 32-pin PQFN - real, complete pinout read directly
 # off the Rev. 10.0 datasheet Table 2 ("33926 Pin Definitions"). Footprint
@@ -2592,46 +2636,83 @@ place(f"{LIB}:D_FLYBACK", "D7", "PMEG4010BEA automotive (AEC-Q101), boost soleno
       134, 2045, conn={'1': ('label', 'BOOST_OUT'), '2': ('label', 'VBATT_SW')})
 
 # --- exhaust gas temperature (EGT) ------------------------------------------
-# Analog Devices AD8495ARZ, 8-lead MSOP, real pinout read directly off the
-# ADI datasheet (Rev. C): 1=-IN, 2=REF, 3=-VS, 4=NC, 5=SENSE, 6=OUT,
-# 7=+VS, 8=+IN. Real "basic connection" per the datasheet's own
-# application circuit: REF and -VS both to GND (single-supply, 0C
-# reference), SENSE tied to OUT (direct measurement mode, not setpoint
-# mode), NC left open.
+# REDESIGNED (a later pass, user's explicit choice of real compliance
+# over simpler hardware): the AD8495 thermocouple amplifier that used to
+# sit here was the right FUNCTION but had no AEC-Q100 qualification, and
+# there is no automotive-qualified dedicated thermocouple amplifier IC
+# anywhere to swap it for (see the ADS1118Q1 symbol registration above
+# for the full list of parts checked and by whom). So this channel is
+# now architecturally different rather than part-swapped: a real
+# AEC-Q100 Grade 1 ADC reads the raw thermocouple millivolts directly,
+# and cold-junction compensation plus NIST ITS-90 K-type linearisation
+# move into firmware.
 #
-# HONEST FLAG: no automotive (AEC-Q100) qualification found anywhere in
-# ADI's own datasheet for this part, despite "Exhaust gas temperature
-# sensing" being explicitly listed as an application - it's an
-# industrial-grade part, not a qualified one. It is the real part the
-# aftermarket EFI industry actually uses for exactly this (Haltech,
-# DIYAutotune, Bosphorus Innovations EGT amplifiers are all built around
-# this same chip), so it's used here as the honest real answer rather
-# than inventing a fictitious "automotive EGT amp" that doesn't exist -
-# but flagged, not silently presented as AEC-Q100 like the rest of this
-# board's active parts.
+# Real front-end topology and values are TI's own, from the ADS1118
+# datasheet's Typical Application (SBAS457F, Figure 50, "Two-Channel
+# Thermocouple Measurement System") - genuinely read this pass, not
+# recalled. TI's own text: "Apart from the thermocouples, the only
+# external circuitry required are biasing resistors, first order
+# low-pass, anti-aliasing filters, and a power supply decoupling
+# capacitor." Per channel, TI specifies:
+#     RPU  = 1 M    pull-up   (one leg to 3.3 V)
+#     RPD  = 1 M    pull-down (other leg to GND)
+#     RDIFFA/B = 500 R series, one per leg
+#     CCMA/CCMB = 0.1 uF common-mode, one per leg to GND
+#     1 uF differential, across the pair after the series resistors
+#     0.1 uF VDD decoupling
+# 499R/1.00M are the real E96 values nearest TI's nominals. This board
+# needs ONE channel (EGT), not TI's two, so AIN0/AIN1 are used
+# differentially and AIN2/AIN3 stay no_connect.
 #
-# REAL CATCH, not obvious from the part alone: this chip's 5mV/C output
-# needs a genuine 5V supply to cover a useful EGT range (5V / 5mV/C =
-# 1000C full scale; on 3.3V it would saturate around 660C, too low for
-# real exhaust gas temperatures which commonly reach 700-950C). But the
-# MCU's real ADC input is a 3.3V-domain pin (same VDD_HV convention
-# already established for the crank/cam VR pull-ups) - feeding a
-# 0-4.9V-capable output directly into it would overrange the ADC input.
-# R77/R78 form a real 2:1 divider (10k/20k, factor 0.667) that maps the
-# amplifier's real ~1000C full-scale output (~5.0V) to ~3.33V, just under
-# the ADC rail, with the known 0.667 ratio to be undone in firmware.
-place(f"{LIB}:AD8495", "U19", "AD8495ARZ EGT amp (industrial grade - see registration note)",
+# The pull-up/pull-down pair does real double duty per TI's own text:
+# it biases the floating thermocouple into the device's specified input
+# range, AND gives free open-lead detection - if either lead fails open,
+# the bias network drives the input to full scale, "outside the normal
+# measurement range of the thermocouple voltage, to indicate a fault".
+# Same class of free self-diagnosis the CLT/IAT dividers already get.
+#
+# REAL PIN SAVING, not a coincidence worth glossing over: moving EGT
+# from an analog read to SPI frees the very pin the ADC needs for its
+# chip select. PD[9] (package pin 78) was ADC0_P13_EGT; ecu-firmware's
+# own siul2.c already recorded, from a real Table 4-1 check, that all
+# the Port D analog pins are ordinary multiplexed pads "also usable as
+# GPIO" (unlike the dedicated analog-only MAP/TPS/IAT/CLT pads). So it
+# becomes SPI_CS_EGT with no new MCU pin, no new harness pin, and no
+# new pin-mapping research.
+place(f"{LIB}:ADS1118Q1", "U19", "ADS1118-Q1 EGT thermocouple ADC (AEC-Q100 Grade 1)",
       654, 1980,
-      conn={'1': ('label', 'EGT_TC_M'), '8': ('label', 'EGT_TC_P', 7.62),
-            '2': ('pwr', 'GND'), '3': ('pwr', 'GND'), '4': ('nc',),
-            '7': ('pwr', '+5V', 5.08),
-            '6': ('label', 'EGT_OUT'), '5': ('label', 'EGT_OUT')})
-place(f"{LIB}:R_V", "R77", "10k EGT divider hi (AEC-Q200)", 784, 1980,
-      conn={'1': ('label', 'EGT_OUT'), '2': ('label', 'EGT_ADC')})
-place(f"{LIB}:R_V", "R78", "20k EGT divider lo (AEC-Q200)", 784, 2032,
-      conn={'1': ('label', 'EGT_ADC'), '2': ('pwr', 'GND')})
-place(f"{LIB}:C_V", "C73", "10nF EGT ADC filter (AEC-Q200)", 862, 2006,
-      conn={'1': ('label', 'EGT_ADC'), '2': ('pwr', 'GND')})
+      conn={'1': ('label', 'SPI_SCLK', 7.62), '2': ('label', 'SPI_CS_EGT', 7.62),
+            '10': ('label', 'SPI_SI', 7.62), '9': ('label', 'SPI_SO', 7.62),
+            '4': ('label', 'EGT_AIN0'), '5': ('label', 'EGT_AIN1'),
+            '6': ('nc',), '7': ('nc',),
+            '8': ('pwr', '+3V3', 5.08), '3': ('pwr', 'GND')})
+place(f"{LIB}:C_V", "C73", "100nF ADS1118-Q1 VDD decouple (AEC-Q200) - real TI Fig 50 value",
+      760, 1940, conn={'1': ('pwr', '+3V3'), '2': ('pwr', 'GND')})
+# CS pull-up: the MCU's GPIOs are high-impedance inputs while it is in
+# reset and before firmware configures the pin, so CS floats on every
+# power-up and every debugger reset. A floating CS can read as asserted
+# and let bus noise clock in a garbage config-register write. Idle for
+# this part is CS HIGH, so a pull-up (not a pull-down) is the safe
+# default. Same real finding, same 10k value, as thermo-pcb's own R11.
+place(f"{LIB}:R_V", "R77", "10k SPI_CS_EGT pull-up (AEC-Q200)", 800, 1940,
+      conn={'1': ('pwr', '+3V3'), '2': ('label', 'SPI_CS_EGT')})
+# Thermocouple bias network (TI Fig 50): pull-up on one leg, pull-down
+# on the other - see the open-lead detection note above.
+place(f"{LIB}:R_V", "R78", "1.00M EGT TC bias pull-up (AEC-Q200) - real TI Fig 50 value",
+      710, 2032, conn={'1': ('pwr', '+3V3'), '2': ('label', 'EGT_TC_P')})
+place(f"{LIB}:R_V", "R91", "1.00M EGT TC bias pull-down (AEC-Q200) - real TI Fig 50 value",
+      750, 2032, conn={'1': ('label', 'EGT_TC_M'), '2': ('pwr', 'GND')})
+# Series + anti-aliasing filter, one per leg.
+place(f"{LIB}:R_V", "R92", "499R EGT TC series (AEC-Q200) - real TI Fig 50 RDIFFA",
+      790, 2032, conn={'1': ('label', 'EGT_TC_P'), '2': ('label', 'EGT_AIN0')})
+place(f"{LIB}:R_V", "R93", "499R EGT TC series (AEC-Q200) - real TI Fig 50 RDIFFB",
+      830, 2032, conn={'1': ('label', 'EGT_TC_M'), '2': ('label', 'EGT_AIN1')})
+place(f"{LIB}:C_V", "C89", "100nF EGT TC common-mode (AEC-Q200) - real TI Fig 50 CCMA",
+      870, 2032, conn={'1': ('label', 'EGT_AIN0'), '2': ('pwr', 'GND')})
+place(f"{LIB}:C_V", "C90", "100nF EGT TC common-mode (AEC-Q200) - real TI Fig 50 CCMB",
+      910, 2032, conn={'1': ('label', 'EGT_AIN1'), '2': ('pwr', 'GND')})
+place(f"{LIB}:C_V", "C88", "1uF EGT TC differential (AEC-Q200) - real TI Fig 50 value",
+      950, 2032, conn={'1': ('label', 'EGT_AIN0'), '2': ('label', 'EGT_AIN1')})
 
 # --- flex-fuel sensor input --------------------------------------------------
 # Real GM-style flex-fuel sensor: 3-wire (+12V, GND, open-collector

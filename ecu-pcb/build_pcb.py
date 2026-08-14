@@ -216,6 +216,28 @@ def net_number(name):
 #    deliberate anchors, not part of any block's generic pack - see the
 #    module docstring for why.
 # ---------------------------------------------------------------------------
+# Inter-part spacing used by the packer.
+#
+# REAL NEGATIVE RESULT, recorded so nobody retries it: this board gained
+# 14 footprints across the L9779 VDD5 regulator, 40A relay and
+# ADS1118-Q1 EGT changes (220 -> 234), after which FreeRouting stopped
+# reaching 0 unrouted - three consecutive full runs on the identical
+# design landed 1, then 2, then 3 unrouted nets. The obvious hypothesis
+# was global density (packer squeezing routing channels below what the
+# autorouter can thread), so this was raised 2.0 -> 2.5mm and the whole
+# pipeline re-run. It did NOT help: still 2 unrouted, at the cost of the
+# board growing 122.3 -> 156.3mm tall (~28% more area, a real recurring
+# per-board cost). Reverted.
+#
+# What the failed experiment DID buy is a better diagnosis. The residual
+# unrouted net is most often U20's VBATT_SW specifically (pads 4/6 of the
+# MC33926 ETC H-bridge - high-current pins on a QFN with an exposed pad),
+# recurring across runs rather than landing on random nets. That points
+# at LOCAL congestion around one part's power pins, not global spacing -
+# so the real fix, if it becomes worth doing, is local to U20 (its own
+# fanout/pad geometry, or a targeted keepout), not a board-wide margin.
+# A hand-finish of that one net in pcbnew is the cheap alternative and is
+# normal post-autoroute practice.
 MARGIN = 2.0
 
 ANCHOR_REFS = {"J1", "J3", "J4", "J5", "J6"}

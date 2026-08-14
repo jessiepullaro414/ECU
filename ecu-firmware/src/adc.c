@@ -91,7 +91,10 @@ static const adc_channel_entry_t ADC_CHANNEL_TABLE[] = {
     { PIN_ADC_APP2,    10u },   /* PD[6] = ADC1_P[10] */
     { PIN_ADC_TPS1,    11u },   /* PD[7] = ADC1_P[11] */
     { PIN_ADC_TPS2,    12u },   /* PD[8] = ADC1_P[12] */
-    { PIN_ADC_EGT,     13u },   /* PD[9] = ADC1_P[13] */
+    /* PIN_ADC_EGT (PD[9] = ADC1_P[13]) deliberately removed: EGT is no
+     * longer an analog channel at all. It moved to the ADS1118-Q1 SPI
+     * ADC (ads1118.h) so the board could use a real AEC-Q100 part, and
+     * that pin is now the new device's chip select. */
     { PIN_ADC_ETC_IFB, 14u },   /* PD[10] = ADC1_P[14] */
     { PIN_ADC_KNOCK1,  36u },   /* PB[8] = ADC1_S[4] = channel 32+4 (real, NOT a P[n] pin) */
 };

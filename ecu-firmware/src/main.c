@@ -39,6 +39,7 @@
 #include "cj125.h"
 #include "swt.h"
 #include "clt_sensor.h"
+#include "ads1118.h"
 #include "iat_sensor.h"
 
 typedef enum {
@@ -62,7 +63,14 @@ typedef struct {
     uint16_t map, tps, iat, clt, knock1, knock2;
     uint16_t vbatt, oilp, fuelp;
     uint16_t app1, app2, tps1, tps2;
-    uint16_t egt, etc_ifb;
+    uint16_t etc_ifb;
+    /* EGT is no longer an ADC channel - it moved to the ADS1118-Q1 SPI
+     * thermocouple front end (ads1118.h) so the board could use a real
+     * AEC-Q100 part. Kept as its own signed field in real engineering
+     * units rather than a raw count, since that driver already returns
+     * calibrated values. */
+    int16_t egt_cj_centiC;   /* real cold-junction temperature, hundredths of a degree C */
+    int32_t egt_tc_nv;       /* real thermocouple voltage, nanovolts */
 } sensor_readings_t;
 
 static sensor_readings_t sensors;
@@ -268,6 +276,7 @@ static int hardware_init(void) {
     adc_init(ADC_1_BASE);
     l9779_init();   /* real MC33810 -> L9779WD-SPI replacement, see l9779.h */
     cj125_init();
+    ads1118_init(); /* real EGT thermocouple ADC - see ads1118.h */
     flexcan_init(FLEXCAN_1_BASE, FLEXCAN_CTRL_500KBPS);
     flexcan_init(FLEXCAN_4_BASE, FLEXCAN_CTRL_500KBPS);
     return 1;
@@ -298,8 +307,18 @@ static void read_sensors(void) {
         sensors.app2     = read_adc_pin(PIN_ADC_APP2);
         sensors.tps1     = read_adc_pin(PIN_ADC_TPS1);
         sensors.tps2     = read_adc_pin(PIN_ADC_TPS2);
-        sensors.egt      = read_adc_pin(PIN_ADC_EGT);
         sensors.etc_ifb  = read_adc_pin(PIN_ADC_ETC_IFB);
+        /* Real EGT: two separate single-shot SPI reads - the thermocouple
+         * voltage and the on-die cold-junction temperature. Deliberately
+         * NOT run through iir_update(): that filter is written for
+         * uint16_t raw ADC counts, and these are already-calibrated
+         * signed engineering values in different units. Combining them
+         * into a real EGT temperature needs the NIST ITS-90 type-K
+         * tables, which ads1118.h documents as this driver's one real
+         * open gap - so both halves are read and stored honestly rather
+         * than a fabricated temperature being computed from them. */
+        sensors.egt_tc_nv     = ads1118_raw_to_nanovolts(ads1118_read_thermocouple_raw());
+        sensors.egt_cj_centiC = ads1118_read_coldjunction_centiC();
         sensors_primed = 1;
     } else {
         sensors.map      = iir_update(sensors.map,     read_adc_pin(PIN_ADC_MAP));
@@ -313,8 +332,19 @@ static void read_sensors(void) {
         sensors.app2     = iir_update(sensors.app2,    read_adc_pin(PIN_ADC_APP2));
         sensors.tps1     = iir_update(sensors.tps1,    read_adc_pin(PIN_ADC_TPS1));
         sensors.tps2     = iir_update(sensors.tps2,    read_adc_pin(PIN_ADC_TPS2));
-        sensors.egt      = iir_update(sensors.egt,     read_adc_pin(PIN_ADC_EGT));
         sensors.etc_ifb  = iir_update(sensors.etc_ifb, read_adc_pin(PIN_ADC_ETC_IFB));
+        /* Real EGT: two separate single-shot SPI reads - the thermocouple
+         * voltage and the on-die cold-junction temperature. Deliberately
+         * NOT run through iir_update(): that filter is written for
+         * uint16_t raw ADC counts, and these are already-calibrated
+         * signed engineering values in different units. Combining them
+         * into a real EGT temperature needs the NIST ITS-90 type-K
+         * tables, which ads1118.h documents as this driver's one real
+         * open gap - so both halves are read and stored honestly rather
+         * than a fabricated temperature being computed from them. */
+        sensors.egt_tc_nv     = ads1118_raw_to_nanovolts(ads1118_read_thermocouple_raw());
+        sensors.egt_cj_centiC = ads1118_read_coldjunction_centiC();
+
     }
     /* Real, deliberately unfiltered - see comment above. */
     sensors.knock1 = read_adc_pin(PIN_ADC_KNOCK1);

@@ -133,7 +133,15 @@ static const pinmux_entry_t PINMUX_TABLE[] = {
     {  75,  21,   0,  0, 1 },  /* ADC_TPS    = PB[5] (analog-only pad) */
     {  76,  22,   0,  0, 1 },  /* ADC_IAT    = PB[6] (analog-only pad) */
     {  77,  23,   0,  0, 1 },  /* ADC_CLT    = PB[7] (analog-only pad) */
-    {  78,  57,   0,  0, 1 },  /* ADC_EGT    = PD[9] */
+    /* PD[9] is no longer an analog input - EGT moved to the ADS1118-Q1
+     * SPI ADC (ads1118.h), and this pin became that device's chip
+     * select. Configured as a plain GPIO OUTPUT (OBE=1, APC=0), which
+     * this same table's own note above confirms is valid: the Port D
+     * analog pins are ordinary multiplexed pads with analog layered on
+     * via APC, "just also usable as GPIO". Listed with the other chip
+     * selects rather than here would be tidier, but it is kept in place
+     * so the pin's history stays visible. */
+    {  78,  57,   0,  1, 0 },  /* SPI_CS_EGT = PD[9] (was ADC_EGT) */
     {  79,  58,   0,  0, 1 },  /* ADC_ETC_IFB= PD[10] */
 };
 /* clang-format on */

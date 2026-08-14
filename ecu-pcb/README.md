@@ -250,11 +250,25 @@ same rigor as Manifold's parts research:
   - **Boost control:** a MOSFET-driven solenoid output (flyback-clamped,
     same low-side pattern as the other actuators) for a turbo wastegate
     or boost-control solenoid.
-  - **EGT (exhaust gas temperature):** Analog Devices **AD8495**
-    thermocouple amplifier (5mV/°C, real datasheet value). Its ~5V
-    full-scale output would overrange the MCU's 3.3V ADC domain, so a
-    10k/20k divider (0.667 ratio, undone in firmware) brings it in range
-    — a real catch, not a rounding choice.
+  - **EGT (exhaust gas temperature):** TI **ADS1118-Q1** (AEC-Q100
+    Grade 1), a 16-bit SPI ADC reading the K-type thermocouple's
+    millivolts directly, with cold-junction compensation taken from its
+    own on-die temperature sensor. This replaced an AD8495 thermocouple
+    amplifier — the right *function*, but unqualified, and **no
+    AEC-Q100 dedicated thermocouple amplifier IC exists** to swap it
+    for, so the fix had to be architectural rather than a substitution
+    (see "Known open items"). Front-end values are TI's own from the
+    ADS1118 datasheet's Figure 50 thermocouple application circuit:
+    1 MΩ bias pull-up/pull-down, 499 Ω series per leg, 100 nF
+    common-mode each, 1 µF differential, ±256 mV FSR. The bias pair
+    does real double duty — it biases the floating thermocouple into
+    range *and* gives free open-lead detection, driving the input to
+    full scale if either lead fails open. **Real placement constraint:**
+    U19 must sit physically close to J5's EGT pins, because its on-die
+    sensor only reads a true cold-junction temperature if it is near
+    where the thermocouple wire actually meets copper. Moving EGT to SPI
+    also freed the analog pin it used to occupy (PD[9]) for the new
+    device's chip select, so this cost no extra MCU or harness pins.
   - **Flex-fuel sensor input:** a frequency-capture input (ethanol % =
     frequency, fuel temp = duty cycle) on its own eTPU2/eMIOS channel.
     The GM-style sensor is open-collector and only ever pulls the line
@@ -628,6 +642,21 @@ step that surfaced it.
 
 **Blocking fab:**
 - **No distributor-verified BOM.** The last real step.
+**Not blocking, but worth knowing before re-routing:**
+- **Routing convergence needs a few attempts now.** The committed board
+  is **fully routed — 0 unconnected items** — but since it grew to 234
+  footprints, FreeRouting reaches that only on some runs; successive
+  full runs on the identical design landed 1, 2, then 3 unrouted before
+  one came back clean. The residual net is most often **`U20`'s
+  `VBATT_SW`** (pads 4/6 of the MC33926 ETC H-bridge — high-current
+  pins on a QFN with an exposed pad), recurring rather than random.
+  Global density was tested as the cause and **ruled out**: raising the
+  packer's inter-part `MARGIN` from 2.0 to 2.5 mm did not help *and*
+  grew the board ~28% (122.3 → 156.3 mm tall), so it was reverted. If a
+  future re-route leaves a net short, just regenerate
+  (`build_pcb.py` → `route_board.py`) and try again rather than
+  widening spacing; a targeted local fix at `U20` is the real answer if
+  it ever needs to be deterministic.
 - ~~**K1 relay is undersized.**~~ **RESOLVED.** The Schrack
   RT1-16A-FormC was 16 A against a 30 A main fuse and a real ~22-28 A
   switched load. Replaced with **Panasonic CB1a-T-P-12V**: a real
@@ -697,24 +726,29 @@ step that surfaced it.
     ST's own product-page title via search index, alldatasheet's marking
     database) rather than ST's own PDF — worth a direct check before fab,
     but a genuinely different evidence level from "unconfirmed".
-  - **AD8495** (EGT amp) — **still open, and not closeable by a part
-    swap.** No AEC-Q100-qualified dedicated thermocouple amplifier IC
-    exists at all. This was established exhaustively by the sibling
+  - ~~**AD8495** (EGT amp)~~ — **RESOLVED architecturally, because no
+    part swap was possible.** No AEC-Q100-qualified dedicated
+    thermocouple amplifier IC exists at all — established exhaustively
+    by the sibling
     [thermo-pcb](https://github.com/jessiepullaro414/Thermo) project
-    (which checked MAX31855, MAX31856, AD8495, LTC2983 and MCP9600 —
+    (MAX31855, MAX31856, AD8495, LTC2983 and MCP9600 all checked,
     including a full primary-source datasheet read of the MCP9600) and
-    independently re-confirmed here. The only genuinely compliant path
-    is architectural, not a substitution: an AEC-Q100 ADC reading the
-    raw thermocouple millivolts plus a local sensor for cold-junction
-    reference, with NIST ITS-90 linearisation and CJC done in firmware.
-    thermo-pcb took exactly that route with the **TI ADS1118-Q1**
-    (AEC-Q100 Grade 1, 16-bit SPI ADC, PGA, internal temp sensor TI's
-    own literature documents for thermocouple cold-junction
-    compensation), and its VSSOP-10 footprint is already hand-built and
-    verified there, so it is reusable. Adopting it here is a real
-    decision with real scope (new SPI device, plus K-type ITS-90
-    polynomial firmware this board's EGT channel does not currently
-    need) — deliberately not taken unilaterally.
+    independently re-confirmed here. The only compliant path is to let
+    an AEC-Q100 ADC read the raw thermocouple millivolts and move
+    cold-junction compensation and NIST ITS-90 linearisation into
+    firmware. The board now does exactly that with the **TI
+    ADS1118-Q1**, reusing the VSSOP-10 footprint already hand-built and
+    verified in thermo-pcb. **This board carries no remaining
+    unqualified active part.** One real, honestly-scoped consequence
+    remains on the firmware side rather than the hardware: the ITS-90
+    type-K conversion itself is not implemented, because NIST's own
+    table download returned an HTML page rather than data and this
+    project does not fabricate numeric constants from recall. The SPI,
+    config, both raw reads and the voltage scaling are all real and
+    complete; see `ecu-firmware/inc/ads1118.h`, which documents the gap
+    and the two real anchor points TI's datasheet does confirm
+    (50.644 mV at 1250 °C referenced to a 0 °C cold junction, 52.171 mV
+    referenced to −40 °C).
 - **`Q20`/`Q21` are linear pass elements and dissipate real power.**
   `VDD5` is a linear regulator, so each NMOS burns (V<sub>B</sub> − 5 V)
   × I<sub>load</sub> continuously — roughly 9.4 V × ~100 mA ≈ 1 W per

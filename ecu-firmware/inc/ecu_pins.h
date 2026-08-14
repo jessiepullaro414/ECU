@@ -143,8 +143,19 @@
 #define PIN_ADC_APP2     69u
 #define PIN_ADC_TPS1     70u   /* redundant ETC throttle-body position 1 of 2 */
 #define PIN_ADC_TPS2     71u   /* redundant ETC throttle-body position 2 of 2 */
-#define PIN_ADC_EGT      78u
 #define PIN_ADC_ETC_IFB  79u   /* MC33926 current-feedback sense */
+/* NOTE: package pin 78 (PD[9]) used to be PIN_ADC_EGT, an analog input
+ * feeding an AD8495 thermocouple amplifier's divided-down output. That
+ * part had no AEC-Q100 qualification and no automotive-qualified
+ * dedicated thermocouple amplifier IC exists to swap it for, so the EGT
+ * channel was redesigned around a real AEC-Q100 Grade 1 ADC
+ * (ADS1118-Q1) reading the thermocouple millivolts directly over SPI,
+ * with cold-junction compensation and NIST ITS-90 linearisation moved
+ * into firmware (ads1118.h). That freed this exact pin for the new
+ * device's chip select - see PIN_SPI_CS_EGT below. No new MCU pin was
+ * needed, because siul2.c's own Table 4-1 check had already established
+ * that the Port D analog pins are ordinary multiplexed pads usable as
+ * GPIO, unlike the dedicated analog-only MAP/TPS/IAT/CLT pads. */
 
 /* ---- SPI bus (shared: 2x injector/ignition driver, 2x CJ125) ----------
  * Real MC33810 -> L9779WD-SPI replacement (l9779.h - MC33810 hit Last
@@ -158,6 +169,9 @@
 #define PIN_SPI_CS_INJ1 10u   /* injector/ignition driver #2 (U6, cyl 5-8) chip select */
 #define PIN_SPI_CS_O2A  13u   /* CJ125 #1 (U9, bank A) chip select */
 #define PIN_SPI_CS_O2B  86u   /* CJ125 #2 (U18, bank B) chip select */
+#define PIN_SPI_CS_EGT  78u   /* ADS1118-Q1 EGT thermocouple ADC (U19) chip select.
+                               * Real, deliberate reuse of the pin that used to be
+                               * PIN_ADC_EGT - see the note above its old definition. */
 /* Real, open gap surfaced by the MC33810 -> L9779WD-SPI replacement
  * (see l9779.h/ecu-pcb's redesign plan): this MCU pin drove MC33810's
  * real shared OUTEN kill-switch pin (pin 9). No confirmed

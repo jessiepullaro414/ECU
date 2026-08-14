@@ -626,6 +626,42 @@ explicit rather than blurred.
   thermostatically-regulated coolant, so it's sized via geometric-mean
   (sqrt(177Ω × 100.7kΩ) ≈ 4.22kΩ) for resolution across the full span
   rather than centered on one narrow sub-range.
+- **Real EGT thermocouple front end** ([`inc/ads1118.h`](inc/ads1118.h),
+  [`src/ads1118.c`](src/ads1118.c)) — a whole new peripheral, driven by
+  a real qualification problem rather than a feature request. The
+  board's EGT channel used an AD8495 thermocouple amplifier feeding the
+  MCU's own ADC; that part carries no AEC-Q100 statement, and **no
+  AEC-Q100 dedicated thermocouple amplifier IC exists at all** (MAX31855,
+  MAX31856, AD8495, LTC2983, MCP9600 all checked). So the fix was
+  architectural: a real AEC-Q100 Grade 1 ADC (TI ADS1118-Q1) reads the
+  thermocouple millivolts directly over SPI, and cold-junction
+  compensation moves into firmware using the device's own on-die
+  temperature sensor. Every register fact here is from TI's SBAS457F,
+  read this pass: Config register layout (Figure 44/Table 7), the
+  32-bit transaction format (Section 9.5.7.1), and the cold-junction
+  data format — 14-bit, **left-justified** in the 16-bit result,
+  0.03125 °C/LSB, two's complement (Table 4, with TI's own worked
+  examples confirming it). Two real findings worth calling out: the
+  `NOP[1:0]` field **must** be `01` or the device silently ignores the
+  config write entirely, and this part needs **CPHA=1** (it shifts DOUT
+  on the rising edge and latches DIN on the falling), which is why it
+  cannot share CJ125's CTAR1 despite both being comfortably slow enough
+  — it takes its own CTAR3 at 1.875 MHz, well under this part's real
+  4 MHz ceiling. Moving EGT to SPI also freed the analog pin it used to
+  occupy (PD[9]) to become this device's chip select, so it cost no new
+  MCU pin — `siul2.c`'s own earlier Table 4-1 check had already
+  established those Port D analog pads are usable as GPIO.
+  **Real, named gap, deliberately not faked:** the ITS-90 type-K
+  conversion (cold-junction temperature → equivalent voltage → total
+  voltage → temperature) is *not* implemented. NIST's own table
+  download returned an HTML page rather than data, and this project does
+  not invent numeric constants from recall. The SPI layer, config,
+  both raw reads and the voltage scaling are complete and real; only
+  that final conversion is outstanding, and `ads1118.h` records the two
+  real anchor points TI's datasheet does confirm (50.644 mV at 1250 °C
+  against a 0 °C cold junction, 52.171 mV against −40 °C). `main.c`
+  stores both halves honestly rather than computing a fabricated
+  temperature from them.
 - **Real watchdog (SWT) driver, closing a standing TODO** ([`inc/swt.h`](inc/swt.h),
   [`src/swt.c`](src/swt.c)) — a whole new, previously-untouched chapter
   (Chapter 33, "Software Watchdog Timer", 9 self-contained pages) read

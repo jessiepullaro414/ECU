@@ -1,0 +1,232 @@
+<title>ECU Bill of Materials</title>
+<style>
+  /* Light palette is the base; both dark paths redefine only tokens. */
+  :root{
+    --paper:#fbfaf8; --panel:#ffffff; --ink:#1a1d21; --muted:#6b6f76;
+    --rule:#e4e1dc; --rule-soft:#efedea;
+    --accent:#1d4e89; --brass:#8a6a24;
+    --ok:#2f6b45; --ok-bg:#e9f2ec;
+    --warn:#8a5a00; --warn-bg:#f8efdd;
+    --none:#6b6f76; --none-bg:#eeecea;
+    --shadow:0 1px 2px rgba(26,29,33,.05);
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --paper:#14161a; --panel:#1b1e23; --ink:#e9e7e3; --muted:#9aa0a8;
+      --rule:#2c3037; --rule-soft:#23272d;
+      --accent:#7fb0ec; --brass:#d3ab5c;
+      --ok:#77d7a2; --ok-bg:#16301f;
+      --warn:#efbe73; --warn-bg:#33260f;
+      --none:#9aa0a8; --none-bg:#24282e;
+      --shadow:none;
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#14161a; --panel:#1b1e23; --ink:#e9e7e3; --muted:#9aa0a8;
+    --rule:#2c3037; --rule-soft:#23272d;
+    --accent:#7fb0ec; --brass:#d3ab5c;
+    --ok:#77d7a2; --ok-bg:#16301f;
+    --warn:#efbe73; --warn-bg:#33260f;
+    --none:#9aa0a8; --none-bg:#24282e;
+    --shadow:none;
+  }
+
+  *{box-sizing:border-box}
+  html{-webkit-text-size-adjust:100%}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font:16px/1.65 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  .wrap{max-width:1120px; margin:0 auto; padding:52px 22px 80px;
+        display:flex; flex-direction:column; gap:30px}
+
+  .eyebrow{margin:0; font-size:11.5px; font-weight:700; letter-spacing:.18em;
+           text-transform:uppercase; color:var(--brass)}
+  h1{font-family:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,"Times New Roman",serif;
+     font-weight:600; font-size:clamp(32px,5vw,50px); line-height:1.08;
+     letter-spacing:-.015em; margin:10px 0 0; text-wrap:balance}
+  .standfirst{margin:14px 0 0; color:var(--muted); max-width:64ch; font-size:17px}
+  .rule{height:1px; background:var(--rule); border:0; margin:0}
+
+  .figures{display:flex; flex-wrap:wrap; border:1px solid var(--rule);
+           border-radius:4px; background:var(--panel); box-shadow:var(--shadow); overflow:hidden}
+  .fig{flex:1 1 150px; padding:16px 20px; border-right:1px solid var(--rule-soft)}
+  .fig:last-child{border-right:0}
+  .fig b{display:block; font-size:26px; line-height:1.15; letter-spacing:-.02em;
+         font-variant-numeric:tabular-nums;
+         font-family:"Iowan Old Style",Palatino,Georgia,serif; font-weight:600}
+  .fig span{display:block; margin-top:3px; font-size:11.5px; letter-spacing:.08em;
+            text-transform:uppercase; color:var(--muted)}
+
+  .note{border-left:2px solid var(--accent); padding:2px 0 2px 20px;
+        display:flex; flex-direction:column; gap:10px}
+  .note h2{font-family:"Iowan Old Style",Palatino,Georgia,serif;
+           font-size:19px; font-weight:600; margin:0; letter-spacing:-.01em}
+  .note p{margin:0; font-size:15px; color:var(--muted); max-width:70ch}
+  .note strong{color:var(--ink); font-weight:600}
+
+  .tablewrap{border:1px solid var(--rule); border-radius:4px; background:var(--panel);
+             box-shadow:var(--shadow); overflow-x:auto}
+  table{border-collapse:collapse; width:100%; min-width:920px; font-size:14px}
+  thead th{position:sticky; top:0; z-index:1; background:var(--panel);
+           text-align:left; font-size:10.5px; font-weight:700; letter-spacing:.12em;
+           text-transform:uppercase; color:var(--muted);
+           padding:15px 16px 11px; border-bottom:1px solid var(--rule); white-space:nowrap}
+  tbody td{padding:11px 16px; border-bottom:1px solid var(--rule-soft); vertical-align:top}
+  tbody tr:last-child td{border-bottom:0}
+  tr.cat td{background:var(--paper); color:var(--brass);
+            font-size:10.5px; font-weight:700; letter-spacing:.16em; text-transform:uppercase;
+            padding:11px 16px; border-bottom:1px solid var(--rule); border-top:1px solid var(--rule)}
+  .mpn,.pkg,.refs{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace}
+  .mpn{font-size:13px; font-weight:600; white-space:nowrap}
+  .desc{color:var(--muted); min-width:260px}
+  .pkg{font-size:12px; color:var(--muted); white-space:nowrap}
+  .qty{text-align:right; font-variant-numeric:tabular-nums; font-weight:700; white-space:nowrap}
+  .refs{font-size:12px; color:var(--muted)}
+  .q-yes,.q-tbd,.q-na{display:inline-block; padding:2px 9px; border-radius:3px;
+                      font-size:11px; font-weight:700; letter-spacing:.03em; white-space:nowrap}
+  .q-yes{color:var(--ok); background:var(--ok-bg)}
+  .q-tbd{color:var(--warn); background:var(--warn-bg)}
+  .q-na{color:var(--none); background:var(--none-bg)}
+
+  footer{color:var(--muted); font-size:14px; max-width:72ch}
+  footer p{margin:0}
+  footer code{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+              font-size:13px; color:var(--ink)}
+  a{color:var(--accent)}
+  a:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+  @media (prefers-reduced-motion:reduce){*{animation:none !important; transition:none !important}}
+  @media (max-width:640px){
+    .wrap{padding:32px 15px 60px; gap:24px}
+    .fig{flex-basis:50%; border-bottom:1px solid var(--rule-soft)}
+  }
+</style>
+
+<div class="wrap">
+  <header>
+    <p class="eyebrow">Jessie&rsquo;s Cars &middot; Engine Control Unit</p>
+    <h1>ECU Bill of Materials</h1>
+    <p class="standfirst">Every part on the standalone engine-control unit &mdash; an
+    NXP MPC5606B board driving eight injectors and eight ignition coils, with wideband
+    O<sub>2</sub>, knock sensing, electronic throttle, dual CAN, and firmware flashing
+    over both USB and Bluetooth.</p>
+  </header>
+
+  <div class="figures">
+    <div class="fig"><b>68</b><span>Line items</span></div>
+    <div class="fig"><b>234</b><span>Placements</span></div>
+    <div class="fig"><b>8</b><span>Copper layers</span></div>
+    <div class="fig"><b>165.8 &times; 130.2</b><span>Board, mm</span></div>
+  </div>
+
+  <div class="note">
+    <h2>How to read this list</h2>
+    <p><strong>Active parts, connectors and electromechanical parts</strong> carry real
+    manufacturer part numbers, each verified against the manufacturer&rsquo;s own datasheet
+    when it was designed in. Qualification is quoted from those datasheets.</p>
+    <p><strong>Passives are specified parametrically</strong> &mdash; value, package and the
+    AEC-Q200 requirement &mdash; rather than pinned to one vendor. That is how passives are
+    actually bought: an 0603 100&nbsp;nF X7R AEC-Q200 capacitor is a commodity chosen on
+    value, size, voltage and qualification.</p>
+    <p><strong>Pricing and stock are not included.</strong> Nothing here was checked against
+    a distributor&rsquo;s live catalogue, and availability moves. Two lines are worth confirming
+    first: the Bosch CJ125, long-lived but not a mainline catalogue part, and the eight
+    FGP3040G2 ignition IGBTs &mdash; the largest single line.</p>
+  </div>
+
+  <div class="tablewrap">
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Part number</th><th scope="col">Manufacturer</th>
+          <th scope="col">Description</th><th scope="col">Package</th>
+          <th scope="col">Qty</th><th scope="col">Designators</th>
+          <th scope="col">Qualification</th>
+        </tr>
+      </thead>
+      <tbody>
+<tr class="cat"><td colspan="7">Semiconductors</td></tr>
+<tr><td class="mpn">FGP3040G2</td><td>onsemi</td><td class="desc">400V 30A ignition IGBT (EcoSPARK II), TO-220</td><td class="pkg">TO-220-3_Vertical</td><td class="qty">8</td><td class="refs">Q3-Q10</td><td><span class="q-yes">Automotive</span></td></tr>
+<tr><td class="mpn">PMV37ENEA</td><td>Nexperia</td><td class="desc">N-MOSFET, low-side solenoid/heater driver</td><td class="pkg">SOT-23</td><td class="qty">8</td><td class="refs">Q11-Q18</td><td><span class="q-yes">AEC-Q101</span></td></tr>
+<tr><td class="mpn">PMEG4010BEA</td><td>Nexperia</td><td class="desc">40V 1A Schottky, flyback clamp</td><td class="pkg">D_SOD-123</td><td class="qty">6</td><td class="refs">D2-D7</td><td><span class="q-yes">AEC-Q101</span></td></tr>
+<tr><td class="mpn">MAX9924UAUB+</td><td>Analog Devices</td><td class="desc">Variable-reluctance sensor interface (crank/cam)</td><td class="pkg">MSOP-10_3x3mm_P0.5mm</td><td class="qty">3</td><td class="refs">U7, U8, U16</td><td><span class="q-yes">AEC-Q100</span></td></tr>
+<tr><td class="mpn">CJ125</td><td>Bosch</td><td class="desc">Wideband lambda (O2) sensor interface for LSU4.x</td><td class="pkg">SOIC-24W_7.5x15.4mm_P1.27mm</td><td class="qty">2</td><td class="refs">U9, U18</td><td><span class="q-yes">Automotive</span></td></tr>
+<tr><td class="mpn">L9779WD-SPI</td><td>ST</td><td class="desc">Multifunction engine-management IC: 4x injector LSD + 4x ignition pre-driver</td><td class="pkg">L9779WD-SPI</td><td class="qty">2</td><td class="refs">U5, U6</td><td><span class="q-yes">Automotive</span></td></tr>
+<tr><td class="mpn">STD20NF06LAG</td><td>ST</td><td class="desc">60V 24A logic-level N-MOSFET, VDD5 linear pass element</td><td class="pkg">TO-252-3_TabPin2</td><td class="qty">2</td><td class="refs">Q20, Q21</td><td><span class="q-yes">AEC-Q101</span></td></tr>
+<tr><td class="mpn">TJA1043T/1J</td><td>NXP</td><td class="desc">High-speed CAN transceiver with wake</td><td class="pkg">SOIC-14_3.9x8.7mm_P1.27mm</td><td class="qty">2</td><td class="refs">U11, U12</td><td><span class="q-yes">AEC-Q100</span></td></tr>
+<tr><td class="mpn">TLV2372QDRQ1</td><td>TI</td><td class="desc">Dual rail-to-rail op-amp, knock-sensor front end</td><td class="pkg">SOIC-8_3.9x4.9mm_P1.27mm</td><td class="qty">2</td><td class="refs">U10, U17</td><td><span class="q-yes">AEC-Q100 G1</span></td></tr>
+<tr><td class="mpn">5KP33A</td><td>Littelfuse</td><td class="desc">5000W TVS diode, load-dump protection</td><td class="pkg">D_P600_R-6_P12.70mm_Horizontal</td><td class="qty">1</td><td class="refs">D1</td><td><span class="q-yes">AEC-Q101</span></td></tr>
+<tr><td class="mpn">ADS1118QDGSRQ1</td><td>TI</td><td class="desc">16-bit SPI ADC w/ PGA + on-die temp sensor, EGT thermocouple front end</td><td class="pkg">TI_DGS0010A_VSSOP-10_3x3mm_P0.5mm</td><td class="qty">1</td><td class="refs">U19</td><td><span class="q-yes">AEC-Q100 G1</span></td></tr>
+<tr><td class="mpn">BALUN 2.4GHz</td><td>TBD</td><td class="desc">2.4GHz balun/matching network - PART NOT YET FIXED</td><td class="pkg">DFN-6_1.6x1.3mm_P0.4mm</td><td class="qty">1</td><td class="refs">FB1</td><td><span class="q-tbd">TBD</span></td></tr>
+<tr><td class="mpn">CC2640R2FRSMRQ1</td><td>TI</td><td class="desc">Bluetooth Low Energy SoC (wireless reflash)</td><td class="pkg">QFN-48-1EP_7x7mm_P0.5mm_EP5.15x5.15mm</td><td class="qty">1</td><td class="refs">U14</td><td><span class="q-yes">AEC-Q100 G2</span></td></tr>
+<tr><td class="mpn">FT4232HAQ-REEL</td><td>FTDI</td><td class="desc">Quad USB UART/MPSSE bridge (USB flashing + JTAG)</td><td class="pkg">QFN-64-1EP_9x9mm_P0.5mm_EP4.7x4.7mm</td><td class="qty">1</td><td class="refs">U13</td><td><span class="q-yes">AEC-Q100 G2</span></td></tr>
+<tr><td class="mpn">LM74700QDBVRQ1</td><td>TI</td><td class="desc">Ideal-diode controller (reverse-battery protection)</td><td class="pkg">SOT-23-6</td><td class="qty">1</td><td class="refs">U2</td><td><span class="q-yes">AEC-Q100 G1</span></td></tr>
+<tr><td class="mpn">LMR33630BRNXRQ1</td><td>TI</td><td class="desc">3A synchronous buck regulator, 5V rail</td><td class="pkg">TI_RNX0012C_VQFN-HR-12_2x3mm_P0.5mm</td><td class="qty">1</td><td class="refs">U3</td><td><span class="q-yes">AEC-Q100 G1</span></td></tr>
+<tr><td class="mpn">MC33926PNB</td><td>NXP</td><td class="desc">5.0A throttle-control H-bridge (electronic throttle)</td><td class="pkg">QFN-32-1EP_5x5mm_P0.5mm_EP3.1x3.1mm</td><td class="qty">1</td><td class="refs">U20</td><td><span class="q-yes">AEC-Q100 G1</span></td></tr>
+<tr><td class="mpn">MPC5606BMLU</td><td>NXP</td><td class="desc">32-bit Power Architecture engine-control MCU, 144-LQFP</td><td class="pkg">LQFP-144_20x20mm_P0.5mm</td><td class="qty">1</td><td class="refs">U1</td><td><span class="q-yes">AEC-Q100</span></td></tr>
+<tr><td class="mpn">PMV230ENEA</td><td>Nexperia</td><td class="desc">N-MOSFET, relay-coil driver</td><td class="pkg">SOT-23</td><td class="qty">1</td><td class="refs">Q2</td><td><span class="q-yes">AEC-Q101</span></td></tr>
+<tr><td class="mpn">SN3257QPWRQ1</td><td>TI</td><td class="desc">4-channel analog switch (USB/BLE bus arbitration)</td><td class="pkg">TSSOP-16_4.4x5mm_P0.65mm</td><td class="qty">1</td><td class="refs">U15</td><td><span class="q-yes">AEC-Q100 G1</span></td></tr>
+<tr><td class="mpn">SQM40020EL_GE3</td><td>Vishay</td><td class="desc">40V 100A N-MOSFET, shared reverse-battery pass element</td><td class="pkg">TO-263-3_TabPin2</td><td class="qty">1</td><td class="refs">Q1</td><td><span class="q-yes">AEC-Q101</span></td></tr>
+<tr><td class="mpn">TLV73333PQDBVRQ1</td><td>TI</td><td class="desc">300mA LDO, 3.3V rail</td><td class="pkg">SOT-23-5</td><td class="qty">1</td><td class="refs">U4</td><td><span class="q-yes">AEC-Q100 G1</span></td></tr>
+<tr class="cat"><td colspan="7">Electromechanical</td></tr>
+<tr><td class="mpn">KEYSTONE 3568</td><td>Keystone</td><td class="desc">Mini blade fuse holder, PCB mount (fuse element ordered separately)</td><td class="pkg">Fuseholder_Blade_Mini_Keystone_3568</td><td class="qty">4</td><td class="refs">F1-F4</td><td><span class="q-na">-</span></td></tr>
+<tr><td class="mpn">CB1a-T-P-12V</td><td>Panasonic</td><td class="desc">40A automotive PCB power relay, 12V coil, sealed, -40..+125C</td><td class="pkg">Panasonic_CB1a-T-P_Relay_40A</td><td class="qty">1</td><td class="refs">K1</td><td><span class="q-yes">Automotive -40..125C</span></td></tr>
+<tr><td class="mpn">Littelfuse 0297002</td><td>Littelfuse</td><td class="desc">2A Mini blade fuse element (logic supply)</td><td class="pkg">Mini blade (element)</td><td class="qty">1</td><td class="refs">F2</td><td><span class="q-na">-</span></td></tr>
+<tr><td class="mpn">Littelfuse 0297015</td><td>Littelfuse</td><td class="desc">15A Mini blade fuse element (injector rail)</td><td class="pkg">Mini blade (element)</td><td class="qty">1</td><td class="refs">F3</td><td><span class="q-na">-</span></td></tr>
+<tr><td class="mpn">Littelfuse 0297025</td><td>Littelfuse</td><td class="desc">25A Mini blade fuse element (ignition rail)</td><td class="pkg">Mini blade (element)</td><td class="qty">1</td><td class="refs">F4</td><td><span class="q-na">-</span></td></tr>
+<tr><td class="mpn">Littelfuse 0297030</td><td>Littelfuse</td><td class="desc">30A Mini blade fuse element (main input)</td><td class="pkg">Mini blade (element)</td><td class="qty">1</td><td class="refs">F1</td><td><span class="q-na">-</span></td></tr>
+<tr class="cat"><td colspan="7">Connectors</td></tr>
+<tr><td class="mpn">1-776180-1</td><td>TE</td><td class="desc">AMPSEAL 35-position sealed harness connector, right-angle PCB header</td><td class="pkg">TE_1-776180-1</td><td class="qty">2</td><td class="refs">J4, J5</td><td><span class="q-yes">Automotive</span></td></tr>
+<tr><td class="mpn">12401610E4#2A</td><td>Amphenol</td><td class="desc">USB-C receptacle, 16-pin</td><td class="pkg">USB_C_Receptacle_Amphenol_12401610E4-2A</td><td class="qty">1</td><td class="refs">J3</td><td><span class="q-na">-</span></td></tr>
+<tr><td class="mpn">PinHeader 1x08</td><td>generic</td><td class="desc">2.54mm pin header, JTAG/debug (bench use)</td><td class="pkg">PinHeader_1x08_P2.54mm_Vertical</td><td class="qty">1</td><td class="refs">J1</td><td><span class="q-na">-</span></td></tr>
+<tr><td class="mpn">U.FL-R-SMT-1</td><td>Hirose</td><td class="desc">U.FL coaxial connector for external BLE antenna</td><td class="pkg">U.FL_Hirose_U.FL-R-SMT-1_Vertical</td><td class="qty">1</td><td class="refs">J6</td><td><span class="q-na">-</span></td></tr>
+<tr class="cat"><td colspan="7">Passives</td></tr>
+<tr><td class="mpn">100nF Capacitor</td><td>(any qualified)</td><td class="desc">Capacitor 100nF - X7R/X5R ceramic, AEC-Q200</td><td class="pkg">C_0603_1608Metric</td><td class="qty">34</td><td class="refs">C1, C3, C9-C13, C23, C24, C29, C31, C32, C35, C36, C40-C45, C50, C51, C54, C58, C59, C67, C69, C70, C73, C77, C82, C83, C89, C90</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">10k Resistor</td><td>(any qualified)</td><td class="desc">Resistor 10k - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">26</td><td class="refs">R1, R4, R9-R12, R17, R18, R26, R27, R40-R45, R49-R51, R60, R64, R67-R69, R77, R82</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">1k Resistor</td><td>(any qualified)</td><td class="desc">Resistor 1k - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">22</td><td class="refs">R3, R21-R23, R29, R33, R53-R59, R62, R74-R76, R79, R87-R90</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">1uF Capacitor</td><td>(any qualified)</td><td class="desc">Capacitor 1uF - X7R/X5R ceramic, AEC-Q200</td><td class="pkg">C_0603_1608Metric</td><td class="qty">14</td><td class="refs">C4, C6, C14-C19, C21, C37, C55, C86-C88</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">33nF Capacitor</td><td>(any qualified)</td><td class="desc">Capacitor 33nF - X7R/X5R ceramic, AEC-Q200</td><td class="pkg">C_0603_1608Metric</td><td class="qty">9</td><td class="refs">C25, C26, C28, C30, C64-C66, C68, C75</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">22nF Capacitor</td><td>(any qualified)</td><td class="desc">Capacitor 22nF - X7R/X5R ceramic, AEC-Q200</td><td class="pkg">C_0603_1608Metric</td><td class="qty">8</td><td class="refs">C33, C34, C60, C61, C78-C81</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">1nF Capacitor</td><td>(any qualified)</td><td class="desc">Capacitor 1nF - X7R/X5R ceramic, AEC-Q200</td><td class="pkg">C_0603_1608Metric</td><td class="qty">5</td><td class="refs">C39, C57, C63, C71, C74</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">100k Resistor</td><td>(any qualified)</td><td class="desc">Resistor 100k - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">4</td><td class="refs">R15, R47, R65, R70</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">18pF Capacitor</td><td>(any qualified)</td><td class="desc">Capacitor 18pF - X7R/X5R ceramic, AEC-Q200</td><td class="pkg">C_0603_1608Metric</td><td class="qty">4</td><td class="refs">C7, C8, C48, C49</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">60R Resistor</td><td>(any qualified)</td><td class="desc">Resistor 60R - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">4</td><td class="refs">R34-R37</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">10uF Capacitor</td><td>(any qualified)</td><td class="desc">Capacitor 10uF - X7R/X5R ceramic, AEC-Q200</td><td class="pkg">C_0603_1608Metric</td><td class="qty">3</td><td class="refs">C76, C84, C85</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">4.7k Resistor</td><td>(any qualified)</td><td class="desc">Resistor 4.7k - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">3</td><td class="refs">R31, R32, R52</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">4k7 Resistor</td><td>(any qualified)</td><td class="desc">Resistor 4k7 - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">3</td><td class="refs">R46, R73, R80</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">1.00M Resistor</td><td>(any qualified)</td><td class="desc">Resistor 1.00M - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">2</td><td class="refs">R78, R91</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">10nF Capacitor</td><td>(any qualified)</td><td class="desc">Capacitor 10nF - X7R/X5R ceramic, AEC-Q200</td><td class="pkg">C_0603_1608Metric</td><td class="qty">2</td><td class="refs">C38, C62</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">10pF Capacitor</td><td>(any qualified)</td><td class="desc">Capacitor 10pF - X7R/X5R ceramic, AEC-Q200</td><td class="pkg">C_0603_1608Metric</td><td class="qty">2</td><td class="refs">C52, C53</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">1M Resistor</td><td>(any qualified)</td><td class="desc">Resistor 1M - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">2</td><td class="refs">R28, R61</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">2.2nF Capacitor</td><td>(any qualified)</td><td class="desc">Capacitor 2.2nF - X7R/X5R ceramic, AEC-Q200</td><td class="pkg">C_0603_1608Metric</td><td class="qty">2</td><td class="refs">C56, C72</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">20k Resistor</td><td>(any qualified)</td><td class="desc">Resistor 20k - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">2</td><td class="refs">R30, R63</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">22uF Capacitor</td><td>(any qualified)</td><td class="desc">Capacitor 22uF - X7R/X5R ceramic, AEC-Q200</td><td class="pkg">C_0603_1608Metric</td><td class="qty">2</td><td class="refs">C2, C5</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">4.7nF Capacitor</td><td>(any qualified)</td><td class="desc">Capacitor 4.7nF - X7R/X5R ceramic, AEC-Q200</td><td class="pkg">C_0603_1608Metric</td><td class="qty">2</td><td class="refs">C46, C47</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">470k Resistor</td><td>(any qualified)</td><td class="desc">Resistor 470k - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">2</td><td class="refs">R19, R71</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">499R Resistor</td><td>(any qualified)</td><td class="desc">Resistor 499R - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">2</td><td class="refs">R92, R93</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">5.1k Resistor</td><td>(any qualified)</td><td class="desc">Resistor 5.1k - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">2</td><td class="refs">R38, R39</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">61R9 Resistor</td><td>(any qualified)</td><td class="desc">Resistor 61R9 - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">2</td><td class="refs">R16, R66</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">82R5 Resistor</td><td>(any qualified)</td><td class="desc">Resistor 82R5 - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">2</td><td class="refs">R20, R72</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">ferrite Inductor</td><td>(any qualified)</td><td class="desc">Inductor ferrite - AEC-Q200</td><td class="pkg">L_1210_3225Metric</td><td class="qty">2</td><td class="refs">L2, L3</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">1.00k Resistor</td><td>(any qualified)</td><td class="desc">Resistor 1.00k - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">1</td><td class="refs">R25</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">10uH Inductor</td><td>(any qualified)</td><td class="desc">Inductor 10uH - AEC-Q200</td><td class="pkg">L_1210_3225Metric</td><td class="qty">1</td><td class="refs">L1</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">12MHz Crystal</td><td>(any qualified)</td><td class="desc">Crystal 12MHz - AEC-Q200</td><td class="pkg">Crystal_SMD_3225-4Pin_3.2x2.5mm</td><td class="qty">1</td><td class="refs">Y2</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">2.49k Resistor</td><td>(any qualified)</td><td class="desc">Resistor 2.49k - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">1</td><td class="refs">R2</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">24MHz Crystal</td><td>(any qualified)</td><td class="desc">Crystal 24MHz - AEC-Q200</td><td class="pkg">Crystal_SMD_3225-4Pin_3.2x2.5mm</td><td class="qty">1</td><td class="refs">Y3</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">270R Resistor</td><td>(any qualified)</td><td class="desc">Resistor 270R - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">1</td><td class="refs">R81</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">4.22k Resistor</td><td>(any qualified)</td><td class="desc">Resistor 4.22k - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">1</td><td class="refs">R24</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">68k Resistor</td><td>(any qualified)</td><td class="desc">Resistor 68k - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">1</td><td class="refs">R48</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">8MHz Crystal</td><td>(any qualified)</td><td class="desc">Crystal 8MHz - AEC-Q200</td><td class="pkg">Crystal_SMD_3225-4Pin_3.2x2.5mm</td><td class="qty">1</td><td class="refs">Y1</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <hr class="rule">
+
+  <footer>
+    <p>Generated directly from the project schematic by <code>build_bom.py</code>, so
+    quantities and designators cannot drift from the board. One part remains genuinely
+    open: the 2.4&nbsp;GHz balun (FB1), whose exact part and matching network are still to
+    be fixed against the radio reference design.</p>
+  </footer>
+</div>

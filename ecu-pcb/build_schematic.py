@@ -2766,7 +2766,7 @@ place(f"{LIB}:C_V", "C74", "1nF flex-fuel filter (AEC-Q200)", 1252, 2032,
 # behavior) is entirely a FIRMWARE responsibility. This board does not
 # and cannot implement ISO 26262-style throttle safety in hardware alone
 # - flagged honestly, not hidden, matching this project's own README.
-place(f"{LIB}:MC33926", "U20", "MC33926 ETC H-bridge (industrial grade - see registration note)",
+place(f"{LIB}:MC33926", "U20", "NXP MC33926 ETC H-bridge (AEC-Q100 Grade 1, confirmed Rev.13+)",
       1642, 1980,
       conn={
           '2': ('label', 'ETC_IN1', 7.62), '1': ('label', 'ETC_IN2', 7.62),

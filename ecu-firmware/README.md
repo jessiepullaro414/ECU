@@ -546,6 +546,33 @@ explicit rather than blurred.
   intentional distinction, not an oversight. `SENSOR_IIR_SHIFT`'s
   specific time constant isn't tuned against a real running engine yet
   (can't be, until one exists) — same scope boundary as VE tables.
+- **Real CLT (coolant temperature) sensor driver** ([`inc/clt_sensor.h`](inc/clt_sensor.h),
+  [`src/clt_sensor.c`](src/clt_sensor.c)) — the board's CLT sensor was
+  swapped to a real GM-style resistive sending unit (DIYAutoTune's
+  "GM Closed Element CLT/Oil Temperature Sensor", the same real part/
+  curve the sibling [thermo-pcb](https://github.com/jessiepullaro414/Thermo)
+  project uses for its own engine-temperature sensor, and genuinely what
+  production automotive coolant senders are). Real published curve
+  (manufacturer's own page, only 3 points exist): -40°F=100.7kΩ,
+  86°F=2.24kΩ, 210.2°F=177Ω. Since only 3 real calibration points exist,
+  a single global NTC Beta constant across the full 250°F span would be
+  a real approximation error (the two segments' own local Betas differ
+  by ~8%, confirmed by computing both) — so a piecewise-Beta model was
+  fit per real segment and used to derive a 14-row lookup table at
+  design time (shown in `clt_sensor.c`'s own derivation comment), with
+  plain integer linear interpolation at runtime, no floating point,
+  matching every other driver here. Readings outside the real calibrated
+  range are clamped, not extrapolated (no real data exists past -40°F
+  or 210.2°F) — which doubles as free open/short sensor-fault detection,
+  same behavior the identical circuit already gives thermo-pcb. This
+  redesign also caught and fixed a real hardware bug on the PCB side:
+  both IAT's and CLT's pull-ups were wired to +5V despite this MCU's ADC
+  domain genuinely running at 3.3V (no separate VRH/VRL pins) — a real
+  latent over-voltage risk at cold temperatures, fixed in
+  `ecu-pcb/build_schematic.py` (R24/R25 now pull up to +3V3). Not yet
+  wired into engine-control logic (warm-up enrichment) — that's real
+  engine-specific tuning data, same "needs a running engine" boundary as
+  the VE/dwell tables, see `injection.h`'s own note.
 - **Real watchdog (SWT) driver, closing a standing TODO** ([`inc/swt.h`](inc/swt.h),
   [`src/swt.c`](src/swt.c)) — a whole new, previously-untouched chapter
   (Chapter 33, "Software Watchdog Timer", 9 self-contained pages) read

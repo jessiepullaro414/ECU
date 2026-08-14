@@ -38,6 +38,7 @@
 #include "intc.h"
 #include "cj125.h"
 #include "swt.h"
+#include "clt_sensor.h"
 
 typedef enum {
     ENGINE_STATE_CRANK_SYNC,   /* waiting for a cam edge to disambiguate 360 vs 720 */

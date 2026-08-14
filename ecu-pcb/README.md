@@ -200,7 +200,24 @@ same rigor as Manifold's parts research:
     dividers), oil pressure, fuel pressure, and **battery voltage** —
     the last of these matters more than it looks, because real injector
     dead time varies strongly with supply voltage and can't be
-    compensated without measuring it.
+    compensated without measuring it. **CLT is now a real, specific
+    part** (not a generic placeholder): the DIYAutoTune GM Closed
+    Element CLT/Oil Temperature Sensor — the same real resistive
+    sending-unit family production engine ECUs actually use, and the
+    same exact part/curve as the sibling
+    [thermo-pcb](https://github.com/jessiepullaro414/Thermo) project's
+    own engine-temperature sensor. Real published curve: -40°F=100.7kΩ,
+    86°F=2.24kΩ, 210.2°F=177Ω. R25's 1.00kΩ pull-up is sized (like
+    thermo-pcb's own R12) to center ADC resolution on the sensor's real
+    86-210°F engine-operating range rather than the cold-start extreme.
+    Fixing this also caught and fixed a real bug: both IAT's and CLT's
+    pull-ups were wired to +5V, but this MCU has no separate ADC
+    reference pins — the ADC domain genuinely runs at 3.3V, so a cold
+    sensor (high resistance) could have pulled the pin close to 5V, over
+    the 3.3V-domain rating. Both now pull up to +3V3. IAT itself is
+    still a generic NTC placeholder (a real intake-air sensor is a
+    different physical part from a coolant sending unit) — only its
+    rail was fixed, not its curve/value.
   - **Knock:** 2x TI TLV2372-Q1 front ends (one per bank).
   - **Wideband O2:** 2x Bosch CJ125 + external heater MOSFET (one per
     bank), both on the shared SPI bus.

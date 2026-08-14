@@ -1649,17 +1649,51 @@ place(f"{LIB}:C_V", "C34", "22nF TPS RC filter (AEC-Q200)", 730, 1420,
 
 # --- IAT / CLT analog inputs (NTC thermistor pull-up dividers) ---
 # Sensor's own NTC element is external (via harness connector, step 9);
-# this board provides the pull-up half of the divider only. 2.2k is a
-# commonly-used pull-up for automotive NTC coolant/air-temp sensors -
-# exact value depends on the specific sensor's real resistance curve
-# (not yet chosen) - confirm before fab, typical placeholder like others.
+# this board provides the pull-up half of the divider only.
+#
+# REAL BUG FOUND AND FIXED (both dividers): this MCU has no separate
+# VRH/VRL ADC reference pins - the ADC domain's real reference IS
+# VDD_HV_ADC0/1, which this board runs at 3.3V (see the "Power domains"
+# note above VDD_HV_ADC0/1's registration). The original pull-up here
+# went to +5V, which for a cold sensor (high NTC resistance, most of the
+# rail dropped across the sensor rather than the pull-up) would pull the
+# ADC input node close to the full 5V rail - a real over-voltage on a
+# 3.3V-domain pin. Both R24/R25 now pull up to +3V3, matching the real
+# ADC reference, not the 5V rail MAP/TPS's own sensors happen to run on.
+#
+# CLT (R25/C36): real part swap, not a placeholder tune. This board now
+# uses the DIYAutoTune "GM Closed Element CLT/Oil Temperature Sensor"
+# (https://diyautotune.com/products/clt-sensor) - a real, closed-element,
+# 3/8" NPT, 2-wire GM-style resistive sending unit, the exact same real
+# part/curve as the sibling thermo-pcb project's own engine-temperature
+# sensor (this is genuinely what production automotive coolant senders
+# are - a resistive sending unit, not a generic/unspecified NTC). Real
+# published curve (manufacturer's own page, only 3 points exist):
+# -40F=100700ohm, 86F=2238ohm, 210.2F=177ohm. R25=1.00k (E96) is not a
+# generic "typical" pull-up - it's the exact same real, deliberate value
+# thermo-pcb's own R12 uses for this exact sensor, sized to center ADC
+# resolution on the sensor's real 86-210.2F ENGINE-OPERATING range
+# (2238-177 ohm) rather than the -40F cold-start extreme (100700 ohm),
+# since the engine spends effectively all its running life in the
+# former. C36 bumped 10nF->100nF, again matching thermo-pcb's own C24
+# for this identical circuit. Real firmware-side conversion (raw ADC ->
+# ohms -> degrees F, piecewise-Beta lookup table derived from these
+# exact 3 real points) lives in ecu-firmware/inc/clt_sensor.h - not a
+# TODO, already implemented.
+#
+# IAT (R24/C35): still a generic NTC pull-up pending a real IAT-specific
+# sensor choice (a real intake-air sensor is physically/electrically a
+# different part than a liquid-immersion coolant sending unit, even
+# though both are NTC thermistors - not swapped here, out of scope for
+# this pass) - only the +5V->+3V3 rail bug above was fixed, value/curve
+# still a placeholder ("typical - confirm").
 place(f"{LIB}:R_V", "R24", "2.2k IAT pull-up (AEC-Q200, typical - confirm)", 760, 1400,
-      conn={'1': ('pwr', '+5V'), '2': ('label', 'IAT_ADC')})
+      conn={'1': ('pwr', '+3V3'), '2': ('label', 'IAT_ADC')})
 place(f"{LIB}:C_V", "C35", "10nF IAT filter (AEC-Q200)", 760, 1420,
       conn={'1': ('label', 'IAT_ADC'), '2': ('pwr', 'GND')})
-place(f"{LIB}:R_V", "R25", "2.2k CLT pull-up (AEC-Q200, typical - confirm)", 790, 1400,
-      conn={'1': ('pwr', '+5V'), '2': ('label', 'CLT_ADC')})
-place(f"{LIB}:C_V", "C36", "10nF CLT filter (AEC-Q200)", 790, 1420,
+place(f"{LIB}:R_V", "R25", "1.00k CLT pull-up (AEC-Q200) - real GM-style sending unit, same sizing as thermo-pcb's R12", 790, 1400,
+      conn={'1': ('pwr', '+3V3'), '2': ('label', 'CLT_ADC')})
+place(f"{LIB}:C_V", "C36", "100nF CLT filter (AEC-Q200) - matches thermo-pcb's C24", 790, 1420,
       conn={'1': ('label', 'CLT_ADC'), '2': ('pwr', 'GND')})
 # Both dividers' OTHER leg (the external NTC element itself, then GND) is
 # entirely off-board - reaches the sensor via the harness connector in

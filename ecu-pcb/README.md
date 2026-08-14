@@ -41,7 +41,10 @@ The **BOM is generated, not hand-kept** — [`build_bom.py`](build_bom.py)
 reads the schematic directly and renders
 [`ECU_BOM.html`](ECU_BOM.html), a standalone parts-list page. What
 remains before fab is a purchasing pass for live pricing and stock, and
-one genuinely unfixed part: the 2.4 GHz balun (`FB1`).
+hand-layout of the RF section, which cannot be machine-routed.
+**Every part on the board is now a real, specific part** — the 2.4 GHz
+balun was the last placeholder, now resolved to a Johanson
+`2450BM14G0011T-AEC`.
 
 The board grew from 144 parts / 160 nets in a
 **sensor and actuator expansion** that closed real functional gaps found
@@ -500,8 +503,9 @@ the same way Manifold was built up subsystem by subsystem:
    finally resolves step 3's original BOOT_FAB/BOOT_ABS/LIN0_TX/LIN0_RX
    stubs. Real, deliberate simplifications: CC2640R2F-Q1's optional
    32.768kHz crystal is omitted (internal RCOSC_LF substitutes); the BLE
-   RF balun's real topology is wired but exact matching values are
-   placeholder pending TI's official reference-design BOM; hardware-
+   RF balun's real topology is wired (its exact part was a placeholder
+   at this point and is **now resolved** — see "Known open items");
+   hardware-
    forced reset-into-bootloader is NOT implemented (neither bridge has a
    spare pin for it) — current mechanism is a firmware-cooperative
    software self-reset over the arbitrated UART, an honestly-flagged
@@ -666,6 +670,37 @@ step that surfaced it.
   **no live pricing or stock was checked** — that still needs a
   purchasing pass on the day. Confirm availability of the Bosch CJ125
   and the eight FGP3040G2 IGBTs first.
+- ~~**2.4 GHz balun (`FB1`) not a real part.**~~ **RESOLVED** — now
+  **Johanson Technology `2450BM14G0011T-AEC`**, an impedance-matched
+  integrated balun + low-pass filter, taken from TI's own application
+  report for this exact pairing (SWRA572, *Johanson Balun for the CC26xx
+  Device Family*) and cross-checked against Johanson's own AEC
+  datasheet. **The suffix matters twice:** the plain `2450BM14G0011` is
+  rated only −40 to +85 °C and would be out of spec here, and
+  `2450BM15A0002` is a different part for the older CC253x-era chipsets
+  entirely. The `-AEC` variant is AEC-Q200 and rated −40 to +105 °C,
+  which exactly matches the CC2640R2F-Q1's own AEC-Q100 **Grade 2**
+  rating — so the balun adds no new thermal limit; the BLE subsystem was
+  already a Grade 2 island. Chosen over TI's **nine-component discrete
+  LC** reference network (CC2640R2F-Q1 datasheet Figure 9-1) because
+  SWRA572 states the integrated part "consolidates Texas Instruments'
+  reference 9 discrete LC components into a single component" with
+  comparable RF performance — and nine tight-tolerance 0402 RF parts is
+  the wrong trade on a machine-routed board. A **100 pF series DC block**
+  (`C91`) sits between its 50 Ω output and `J6`: the CC2640R2F-Q1
+  datasheet warns a DC block is required if the antenna has a DC path to
+  ground, the antenna is deliberately not chosen yet, and whether the
+  balun itself passes DC could not be confirmed — 100 pF is ~0.7 Ω at
+  2.4 GHz so it is electrically invisible, unlike TI's 12 pF, which was
+  part of the discrete match itself.
+- **The RF section still needs hand layout.** This is not a part
+  problem, it is a routing one: a 2.4 GHz matched line cannot be
+  autorouted. FreeRouting has no concept of controlled impedance, and
+  the trace from `FB1` pin 1 through `C91` to `J6` needs a proper
+  ground reference and the via stitching shown in SWRA572's layout
+  reference. Treat the RF chain as hand-routed before fab regardless of
+  what the autorouter produces.
+
 **Not blocking, but worth knowing before re-routing:**
 - **Routing convergence needs a few attempts now.** The committed board
   is **fully routed — 0 unconnected items** — but since it grew to 234
@@ -808,8 +843,8 @@ it is ever wanted, without burdening the standard board.
 **Smaller, previously-flagged items:**
 - CC2640R2F-Q1's UART/boot-control DIO pin choices are plausible but
   not verified against the full DIO crossbar — confirm before firmware
-  bring-up. Its BLE balun matching values are placeholder pending TI's
-  reference-design BOM.
+  bring-up. (The BLE balun itself is **no longer a placeholder** — see
+  "Known open items".)
 - Hardware-forced reset-into-bootloader is not implemented (neither
   bridge has a spare pin); the current mechanism is a
   firmware-cooperative software self-reset, which cannot recover a hung

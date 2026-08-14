@@ -113,10 +113,10 @@
   </header>
 
   <div class="figures">
-    <div class="fig"><b>68</b><span>Line items</span></div>
-    <div class="fig"><b>234</b><span>Placements</span></div>
+    <div class="fig"><b>69</b><span>Line items</span></div>
+    <div class="fig"><b>235</b><span>Placements</span></div>
     <div class="fig"><b>8</b><span>Copper layers</span></div>
-    <div class="fig"><b>165.8 &times; 130.2</b><span>Board, mm</span></div>
+    <div class="fig"><b>165.8 &times; 129.3</b><span>Board, mm</span></div>
   </div>
 
   <div class="note">
@@ -132,6 +132,11 @@
     a distributor&rsquo;s live catalogue, and availability moves. Two lines are worth confirming
     first: the Bosch CJ125, long-lived but not a mainline catalogue part, and the eight
     FGP3040G2 ignition IGBTs &mdash; the largest single line.</p>
+    <p><strong>Watch the suffixes on the balun.</strong> <code>2450BM14G0011T-AEC</code> is
+    the AEC-Q200 part rated &minus;40 to +105&nbsp;°C. The plain <code>2450BM14G0011</code>
+    stops at +85&nbsp;°C and would be out of spec on this board, and
+    <code>2450BM15A0002</code> is a different part for older CC253x-era chipsets. Ordering
+    the wrong one is an easy and expensive mistake.</p>
   </div>
 
   <div class="tablewrap">
@@ -155,9 +160,9 @@
 <tr><td class="mpn">STD20NF06LAG</td><td>ST</td><td class="desc">60V 24A logic-level N-MOSFET, VDD5 linear pass element</td><td class="pkg">TO-252-3_TabPin2</td><td class="qty">2</td><td class="refs">Q20, Q21</td><td><span class="q-yes">AEC-Q101</span></td></tr>
 <tr><td class="mpn">TJA1043T/1J</td><td>NXP</td><td class="desc">High-speed CAN transceiver with wake</td><td class="pkg">SOIC-14_3.9x8.7mm_P1.27mm</td><td class="qty">2</td><td class="refs">U11, U12</td><td><span class="q-yes">AEC-Q100</span></td></tr>
 <tr><td class="mpn">TLV2372QDRQ1</td><td>TI</td><td class="desc">Dual rail-to-rail op-amp, knock-sensor front end</td><td class="pkg">SOIC-8_3.9x4.9mm_P1.27mm</td><td class="qty">2</td><td class="refs">U10, U17</td><td><span class="q-yes">AEC-Q100 G1</span></td></tr>
+<tr><td class="mpn">2450BM14G0011T-AEC</td><td>Johanson Technology</td><td class="desc">2.4GHz impedance-matched balun + low-pass filter for CC26xx, replaces TI&#x27;s 9-part discrete LC network</td><td class="pkg">Balun_Johanson_1.6x0.8mm</td><td class="qty">1</td><td class="refs">FB1</td><td><span class="q-yes">AEC-Q200, -40..+105C</span></td></tr>
 <tr><td class="mpn">5KP33A</td><td>Littelfuse</td><td class="desc">5000W TVS diode, load-dump protection</td><td class="pkg">D_P600_R-6_P12.70mm_Horizontal</td><td class="qty">1</td><td class="refs">D1</td><td><span class="q-yes">AEC-Q101</span></td></tr>
 <tr><td class="mpn">ADS1118QDGSRQ1</td><td>TI</td><td class="desc">16-bit SPI ADC w/ PGA + on-die temp sensor, EGT thermocouple front end</td><td class="pkg">TI_DGS0010A_VSSOP-10_3x3mm_P0.5mm</td><td class="qty">1</td><td class="refs">U19</td><td><span class="q-yes">AEC-Q100 G1</span></td></tr>
-<tr><td class="mpn">BALUN 2.4GHz</td><td>TBD</td><td class="desc">2.4GHz balun/matching network - PART NOT YET FIXED</td><td class="pkg">DFN-6_1.6x1.3mm_P0.4mm</td><td class="qty">1</td><td class="refs">FB1</td><td><span class="q-tbd">TBD</span></td></tr>
 <tr><td class="mpn">CC2640R2FRSMRQ1</td><td>TI</td><td class="desc">Bluetooth Low Energy SoC (wireless reflash)</td><td class="pkg">QFN-48-1EP_7x7mm_P0.5mm_EP5.15x5.15mm</td><td class="qty">1</td><td class="refs">U14</td><td><span class="q-yes">AEC-Q100 G2</span></td></tr>
 <tr><td class="mpn">FT4232HAQ-REEL</td><td>FTDI</td><td class="desc">Quad USB UART/MPSSE bridge (USB flashing + JTAG)</td><td class="pkg">QFN-64-1EP_9x9mm_P0.5mm_EP4.7x4.7mm</td><td class="qty">1</td><td class="refs">U13</td><td><span class="q-yes">AEC-Q100 G2</span></td></tr>
 <tr><td class="mpn">LM74700QDBVRQ1</td><td>TI</td><td class="desc">Ideal-diode controller (reverse-battery protection)</td><td class="pkg">SOT-23-6</td><td class="qty">1</td><td class="refs">U2</td><td><span class="q-yes">AEC-Q100 G1</span></td></tr>
@@ -209,6 +214,7 @@
 <tr><td class="mpn">82R5 Resistor</td><td>(any qualified)</td><td class="desc">Resistor 82R5 - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">2</td><td class="refs">R20, R72</td><td><span class="q-yes">AEC-Q200</span></td></tr>
 <tr><td class="mpn">ferrite Inductor</td><td>(any qualified)</td><td class="desc">Inductor ferrite - AEC-Q200</td><td class="pkg">L_1210_3225Metric</td><td class="qty">2</td><td class="refs">L2, L3</td><td><span class="q-yes">AEC-Q200</span></td></tr>
 <tr><td class="mpn">1.00k Resistor</td><td>(any qualified)</td><td class="desc">Resistor 1.00k - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">1</td><td class="refs">R25</td><td><span class="q-yes">AEC-Q200</span></td></tr>
+<tr><td class="mpn">100pF Capacitor</td><td>(any qualified)</td><td class="desc">Capacitor 100pF - X7R/X5R ceramic, AEC-Q200</td><td class="pkg">C_0603_1608Metric</td><td class="qty">1</td><td class="refs">C91</td><td><span class="q-yes">AEC-Q200</span></td></tr>
 <tr><td class="mpn">10uH Inductor</td><td>(any qualified)</td><td class="desc">Inductor 10uH - AEC-Q200</td><td class="pkg">L_1210_3225Metric</td><td class="qty">1</td><td class="refs">L1</td><td><span class="q-yes">AEC-Q200</span></td></tr>
 <tr><td class="mpn">12MHz Crystal</td><td>(any qualified)</td><td class="desc">Crystal 12MHz - AEC-Q200</td><td class="pkg">Crystal_SMD_3225-4Pin_3.2x2.5mm</td><td class="qty">1</td><td class="refs">Y2</td><td><span class="q-yes">AEC-Q200</span></td></tr>
 <tr><td class="mpn">2.49k Resistor</td><td>(any qualified)</td><td class="desc">Resistor 2.49k - thick film, AEC-Q200</td><td class="pkg">R_0603_1608Metric</td><td class="qty">1</td><td class="refs">R2</td><td><span class="q-yes">AEC-Q200</span></td></tr>
@@ -225,8 +231,9 @@
 
   <footer>
     <p>Generated directly from the project schematic by <code>build_bom.py</code>, so
-    quantities and designators cannot drift from the board. One part remains genuinely
-    open: the 2.4&nbsp;GHz balun (FB1), whose exact part and matching network are still to
-    be fixed against the radio reference design.</p>
+    quantities and designators cannot drift from the board. Every line is now a real,
+    specific part &mdash; the 2.4&nbsp;GHz balun was the last placeholder and is resolved.
+    What remains before ordering is a purchasing pass for live pricing and availability,
+    and hand-layout of the RF section, which cannot be machine-routed.</p>
   </footer>
 </div>

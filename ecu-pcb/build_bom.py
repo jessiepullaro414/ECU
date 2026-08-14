@@ -37,9 +37,16 @@ would be easy to overclaim here:
     moves. Two parts specifically deserve that check first: the Bosch
     CJ125 (a long-lived part but not a mainline catalogue item) and the
     FGP3040G2 ignition IGBTs (8 off, the single largest line).
+  * EVERY PART IS NOW A REAL, SPECIFIC PART. The 2.4GHz balun was the
+    last placeholder and is now Johanson 2450BM14G0011T-AEC, taken from
+    TI's own SWRA572 application report for this exact CC26xx pairing.
+    Note the suffix: the plain 2450BM14G0011 is rated only -40..+85C and
+    would be out of spec on this board, and 2450BM15A0002 is a different
+    part for the older CC253X-era chipsets entirely.
 
 Run:  python build_bom.py          -> console summary + ECU_BOM.html
 """
+import io
 import os
 import re
 from collections import defaultdict
@@ -50,6 +57,7 @@ from kiutils.utils import sexpr
 HERE = os.path.dirname(os.path.abspath(__file__))
 SCH = os.path.join(HERE, "ECU.kicad_sch")
 OUT_HTML = os.path.join(HERE, "ECU_BOM.html")
+PCB = os.path.join(HERE, "ECU.kicad_pcb")
 
 # Real manufacturer part numbers for every non-passive. Keyed by the
 # distinctive token that appears in the schematic's own Value string, so
@@ -86,7 +94,9 @@ MPN = {
     "USB-C":        ("12401610E4#2A",   "Amphenol",    "USB-C receptacle, 16-pin", "-"),
     "U.FL":         ("U.FL-R-SMT-1",    "Hirose",      "U.FL coaxial connector for external BLE antenna", "-"),
     "JTAG":         ("PinHeader 1x08",  "generic",     "2.54mm pin header, JTAG/debug (bench use)", "-"),
-    "balun":        ("BALUN 2.4GHz",    "TBD",         "2.4GHz balun/matching network - PART NOT YET FIXED", "TBD"),
+    "2450BM14G0011T-AEC": ("2450BM14G0011T-AEC", "Johanson Technology",
+                           "2.4GHz impedance-matched balun + low-pass filter for CC26xx, replaces TI's 9-part discrete LC network",
+                           "AEC-Q200, -40..+105C"),
 }
 
 # Fuse elements are a separate orderable line from their holders.
@@ -98,6 +108,29 @@ FUSE_ELEMENTS = [
 ]
 
 PASSIVE_PREFIXES = ("R", "C", "L", "FB", "Y")
+
+
+def board_size_mm():
+    """Real board outline size, measured from the PCB's own Edge.Cuts
+    geometry. Derived rather than hardcoded for the same reason the rest
+    of this file is generated: the board has been resized by nearly
+    every part change in this project's late life, and a number typed
+    into the page would be stale within one commit. Returns a display
+    string, or None if the PCB has not been generated yet."""
+    try:
+        pcb = io.open(PCB, encoding="utf-8").read()
+    except OSError:
+        return None
+    xs, ys = [], []
+    # Edge.Cuts segments carry explicit start/end coordinates.
+    for m in re.finditer(
+            r"\(gr_line\s*\(start ([-\d.]+) ([-\d.]+)\)\s*\(end ([-\d.]+) ([-\d.]+)\)"
+            r"(?:(?!\(gr_line).)*?Edge\.Cuts", pcb, re.S):
+        xs += [float(m.group(1)), float(m.group(3))]
+        ys += [float(m.group(2)), float(m.group(4))]
+    if not xs:
+        return None
+    return f"{max(xs) - min(xs):.1f} &times; {max(ys) - min(ys):.1f}"
 
 
 def load_parts():
@@ -252,9 +285,11 @@ def render_html(lines, parts):
     table = "\n".join(rows)
     total_lines = len(lines)
     total_parts = len(parts)
+    board = board_size_mm() or "see repo"
     return HTML_TEMPLATE.replace("{{TABLE}}", table) \
                         .replace("{{LINES}}", str(total_lines)) \
-                        .replace("{{PARTS}}", str(total_parts))
+                        .replace("{{PARTS}}", str(total_parts)) \
+                        .replace("{{BOARD}}", board)
 
 
 HTML_TEMPLATE = r"""<title>ECU Bill of Materials</title>
@@ -375,7 +410,7 @@ HTML_TEMPLATE = r"""<title>ECU Bill of Materials</title>
     <div class="fig"><b>{{LINES}}</b><span>Line items</span></div>
     <div class="fig"><b>{{PARTS}}</b><span>Placements</span></div>
     <div class="fig"><b>8</b><span>Copper layers</span></div>
-    <div class="fig"><b>165.8 &times; 130.2</b><span>Board, mm</span></div>
+    <div class="fig"><b>{{BOARD}}</b><span>Board, mm</span></div>
   </div>
 
   <div class="note">
@@ -391,6 +426,11 @@ HTML_TEMPLATE = r"""<title>ECU Bill of Materials</title>
     a distributor&rsquo;s live catalogue, and availability moves. Two lines are worth confirming
     first: the Bosch CJ125, long-lived but not a mainline catalogue part, and the eight
     FGP3040G2 ignition IGBTs &mdash; the largest single line.</p>
+    <p><strong>Watch the suffixes on the balun.</strong> <code>2450BM14G0011T-AEC</code> is
+    the AEC-Q200 part rated &minus;40 to +105&nbsp;°C. The plain <code>2450BM14G0011</code>
+    stops at +85&nbsp;°C and would be out of spec on this board, and
+    <code>2450BM15A0002</code> is a different part for older CC253x-era chipsets. Ordering
+    the wrong one is an easy and expensive mistake.</p>
   </div>
 
   <div class="tablewrap">
@@ -413,9 +453,10 @@ HTML_TEMPLATE = r"""<title>ECU Bill of Materials</title>
 
   <footer>
     <p>Generated directly from the project schematic by <code>build_bom.py</code>, so
-    quantities and designators cannot drift from the board. One part remains genuinely
-    open: the 2.4&nbsp;GHz balun (FB1), whose exact part and matching network are still to
-    be fixed against the radio reference design.</p>
+    quantities and designators cannot drift from the board. Every line is now a real,
+    specific part &mdash; the 2.4&nbsp;GHz balun was the last placeholder and is resolved.
+    What remains before ordering is a purchasing pass for live pricing and availability,
+    and hand-layout of the RF section, which cannot be machine-routed.</p>
   </footer>
 </div>
 """

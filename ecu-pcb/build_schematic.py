@@ -2128,16 +2128,60 @@ register_symbol(f"{LIB}:USB_C", "J", "TBD", "Connector_USB:USB_C_Receptacle_Amph
                        P("B8", "SBU2_NC", "no_connect")]},
                 hide_pin_names=True)
 
-# Real required RF topology (differential radio -> balun -> single-ended
-# antenna feed) - exact balun part/matching component VALUES are a
-# placeholder pending TI's official CC2640R2F reference-design BOM/
-# layout (not fetched this session, same "topology real, values TBD"
-# treatment as CJ125's analog network). Antenna itself is out of scope
-# for this pass - BLE_ANT is a labeled stub awaiting a real antenna/
-# connector choice, same pattern as every other off-board interface.
-register_symbol(f"{LIB}:BALUN_2G4", "FB", "TBD", "Package_DFN_QFN:DFN-6_1.6x1.3mm_P0.4mm",
-                {'L': [P(1, "IN+", "passive"), P(2, "IN-", "passive")],
-                 'R': [P(3, "OUT", "passive")], 'B': [P(4, "GND", "power_in")]},
+# RESOLVED (a later pass) - this was the board's last genuinely unfixed
+# part. Real part: Johanson Technology 2450BM14G0011T-AEC, an impedance-
+# matched integrated balun + low-pass filter, EIA 0603 (1.6 x 0.8 x
+# 0.6mm), sourced from TI's OWN application report for this exact
+# pairing (SWRA572, "Johanson Balun for the CC26xx Device Family") plus
+# Johanson's own AEC datasheet - both genuinely read this pass.
+#
+# WHY AN INTEGRATED PART RATHER THAN TI's DISCRETE REFERENCE. The
+# CC2640R2F-Q1 datasheet's own Figure 9-1 ("7ID", the 7x7 internal-bias
+# differential configuration this board uses) specifies a NINE-component
+# discrete LC balun: 2.4nH + 6.8pF-to-GND off RF_N, 1pF across to the
+# summing node, 2.4-2.7nH + 1pF-to-GND off RF_P, then 2nH / 1pF-to-GND /
+# 2nH / 12pF series out to a 50 ohm antenna. SWRA572 states plainly that
+# the 2450BM14G0011 "consolidates Texas Instruments' reference 9 discrete
+# LC components into a single component" with "overall RF performance
+# comparable to discrete LC solution". Nine tight-tolerance 0402 RF parts
+# whose behaviour depends on precise layout is the wrong trade on a board
+# that is machine-routed; one impedance-matched part is far more tolerant
+# of layout variation, and Johanson RF-tests 100% of them before tape.
+#
+# REAL, SPECIFIC PART CHOICE - the suffix matters twice over:
+#   * NOT 2450BM15A0002: that part is for the OLDER CC253X/CC254X/CC257X/
+#     CC852X/CC853X families (its own datasheet says so explicitly) and
+#     is labelled "125C (non-automotive)". Wrong chipset family entirely.
+#   * NOT the plain 2450BM14G0011: correct chipset, but rated only
+#     -40 to +85C, which this board cannot use.
+#   * 2450BM14G0011T-AEC is the AEC-Q200 qualified variant, rated
+#     -40 to +105C. That is not merely a paperwork upgrade - the +85C
+#     part would be out of spec here. +105C also exactly matches the
+#     CC2640R2F-Q1's own AEC-Q100 GRADE 2 rating, so the balun imposes
+#     no new thermal limit on the board; the BLE subsystem was already a
+#     Grade 2 island (the FT4232HA is Grade 2 too).
+#   Johanson's own spec confirms the match applies to chipsets "operated
+#   on INTERNAL BIAS MODE", which is exactly this board's configuration
+#   (CC2640R2F-Q1 datasheet Figure 9-1 is the internal-biasing option).
+#
+# Real terminal configuration, from SWRA572 Table 6 cross-checked against
+# its Figure 6 terminal drawing (rendered as an image - the text layer
+# alone gives the numbers but not which edge they sit on):
+#   1 = UBP, unbalanced 50 ohm port     4 = BP2, balanced port
+#   2 = NC                              5 = GND
+#   3 = BP1, balanced port              6 = GND
+# Johanson draws 3/2/1 along one long edge and 4/5/6 along the other;
+# KiCad's bundled Balun_Johanson_1.6x0.8mm footprint uses the same
+# counter-clockwise sequence drawn in portrait, so BP1/BP2 stay adjacent
+# across the short edge in both - checked before trusting it, because a
+# balun with its differential pair split across the part would be a real,
+# silent RF failure.
+register_symbol(f"{LIB}:BALUN_2G4", "FB", "2450BM14G0011T-AEC",
+                "RF_Converter:Balun_Johanson_1.6x0.8mm",
+                {'L': [P(3, "BP1", "passive"), P(4, "BP2", "passive")],
+                 'R': [P(1, "UBP", "passive")],
+                 'T': [P(2, "NC", "no_connect")],
+                 'B': [P(5, "GND", "power_in"), P(6, "GND", "power_in")]},
                 hide_pin_names=True)
 
 section_text("PROGRAMMING: USB-C (FT4232HA) + BLE (CC2640R2F-Q1) - STEPS 7+8", 30, 1950)
@@ -2213,11 +2257,37 @@ place(f"{LIB}:C_V", "C54", "100nF VDDS decouple (AEC-Q200)", 220, 2040,
 place(f"{LIB}:C_V", "C55", "1uF VDDS bulk (AEC-Q200)", 245, 2040,
       conn={'1': ('pwr', '+3V3'), '2': ('pwr', 'GND')})
 
-# RF chain: differential RF_P/RF_N -> balun -> single-ended antenna feed.
-place(f"{LIB}:BALUN_2G4", "FB1", "2.4GHz balun (typical - confirm part/matching before fab)",
+# RF chain: differential RF_P/RF_N -> integrated balun+LPF -> 50 ohm
+# single-ended -> series DC block -> U.FL (J6) -> external antenna.
+# Pin assignment is TI's own from SWRA572 Figure 1, which draws this
+# exact pairing with real pin names: BP1 to RF_N, BP2 to RF_P, UBP out
+# to the antenna, both GND terminals grounded, NC left open.
+place(f"{LIB}:BALUN_2G4", "FB1",
+      "Johanson 2450BM14G0011T-AEC balun+LPF (AEC-Q200, -40..+105C) - see registration note",
       160, 2080,
-      conn={'1': ('label', 'BLE_RF_P'), '2': ('label', 'BLE_RF_N'),
-            '3': ('label', 'BLE_ANT', 7.62), '4': ('pwr', 'GND')})
+      conn={'3': ('label', 'BLE_RF_N'), '4': ('label', 'BLE_RF_P'),
+            '1': ('label', 'BLE_RF_OUT', 7.62), '2': ('nc',),
+            '5': ('pwr', 'GND'), '6': ('pwr', 'GND')})
+# Series DC block between the balun's 50 ohm output and the U.FL
+# connector. TI's own integrated-balun reference (SWRA572 Figure 1) does
+# not draw one, but the CC2640R2F-Q1 datasheet's 7ID application circuit
+# carries an explicit note that "a DC-blocking capacitor must be used if
+# antenna has DC-path to ground" - and the antenna for this board is
+# deliberately not chosen yet (J6 is a U.FL to an external whip, and
+# plenty of real 2.4GHz antennas are DC-shorted inverted-F types). The
+# honest position is that whether the balun itself passes DC from BP to
+# UBP could not be confirmed from the documents available, so this
+# removes an unverifiable risk for the cost of one 0402.
+#
+# 100pF, NOT the 12pF from TI's discrete reference: that 12pF was part
+# of the discrete matching network itself. Here the balun already
+# presents a matched 50 ohm output, so the DC block wants to be
+# electrically invisible - 100pF is ~0.7 ohm at 2.4GHz against 50 ohm,
+# where 12pF would be ~5.5 ohm and would actually perturb the match.
+# Can be replaced by a 0 ohm link if the chosen antenna is confirmed
+# DC-open and the last fraction of a dB matters.
+place(f"{LIB}:C_V", "C91", "100pF RF DC block (AEC-Q200, C0G/NP0) - see comment", 210, 2080,
+      conn={'1': ('label', 'BLE_RF_OUT'), '2': ('label', 'BLE_ANT')})
 
 # Arbitration switch: 4 real channels cover exactly the 4 signals that
 # need it. D-side ties to the MCU's already-existing labels from step 3
@@ -3200,12 +3270,14 @@ NOTE_LINES = [
     "    substitutes, a real documented tradeoff); VDDS_DCDC ties directly",
     "    to VDDS rather than adding the optional DC/DC converter's",
     "    external inductor (efficiency optimization, not a functional",
-    "    requirement); the BLE RF chain's balun is a real required",
-    "    TOPOLOGY (differential radio -> balun -> single-ended antenna)",
-    "    but its exact part/matching-network VALUES are placeholder,",
-    "    pending TI's official reference-design BOM (not fetched this",
-    "    session) - same 'topology real, values TBD' treatment as CJ125's",
-    "    analog network in step 5. Hardware-forced MCU reset-into-",
+    "    requirement); the BLE RF chain's balun is now a REAL, specific",
+    "    part - Johanson 2450BM14G0011T-AEC, an impedance-matched",
+    "    integrated balun+LPF from TI's own SWRA572 app report for this",
+    "    exact CC26xx pairing, AEC-Q200 and rated -40..+105C (the plain",
+    "    non-AEC part is only +85C and would be out of spec here). It",
+    "    replaces TI's 9-component discrete LC reference network. The RF",
+    "    section still needs HAND LAYOUT - a 2.4GHz matched line cannot",
+    "    be autorouted, see the README. Hardware-forced MCU reset-into-",
     "    bootloader (independent of cooperating firmware) is NOT",
     "    implemented - neither bridge has a spare pin for it in this",
     "    session's partial pin registration; current mechanism relies on",

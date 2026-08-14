@@ -404,6 +404,19 @@ register_symbol(f"{LIB}:MOSFET_N", "Q", "TBD", "Package_TO_SOT_SMD:SOT-23",
 register_symbol(f"{LIB}:MOSFET_N_BIG", "Q", "TBD", "Package_TO_SOT_SMD:TO-263-3_TabPin2",
                 {'L': [P(2, "S", "passive")], 'R': [P(3, "D", "passive")],
                  'B': [P(1, "G", "input")]})
+# Mid-size automotive power MOSFET, DPAK (TO-252AA) - same G/S/D pin
+# convention and same "confirm tab-to-terminal mapping before fab" caveat
+# as MOSFET_N_BIG above, just the smaller package. Added for Q20/Q21, the
+# L9779WD-SPI VDD5 pass transistors: SOT-23 (MOSFET_N) is thermally
+# undersized for a real ~1 W linear pass element, but D2PAK
+# (MOSFET_N_BIG) is the wrong PACKAGE for the real chosen part - ST's
+# STD20NF06L family is DPAK, not D2PAK. A real bug caught by following
+# the part number through to its actual package rather than assuming the
+# existing big-MOSFET symbol would do; DPAK carries ~1 W comfortably
+# given real copper pour under the tab.
+register_symbol(f"{LIB}:MOSFET_N_DPAK", "Q", "TBD", "Package_TO_SOT_SMD:TO-252-3_TabPin2",
+                {'L': [P(2, "S", "passive")], 'R': [P(3, "D", "passive")],
+                 'B': [P(1, "G", "input")]})
 # LM74700-Q1 ideal-diode controller, same real pinout Manifold verified.
 # Reused here for the shared big-MOSFET protection stage (U2) - this project
 # doesn't need Manifold's second copy on the logic branch, since the logic
@@ -1386,31 +1399,48 @@ for chip in range(2):
     # real VDD5 load is the chip's own IGN1-4 pre-drivers (Table 28:
     # I_cont = 15 mA/channel, I_lim 19-33 mA) plus internal logic - order
     # 100 mA, so order 1 W per chip, 2 W across both. That is why a
-    # D2PAK (MOSFET_N_BIG) is used here rather than the SOT-23 MOSFET_N
+    # DPAK (MOSFET_N_DPAK) is used here rather than the SOT-23 MOSFET_N
     # this board uses for its low-side signal drivers: SOT-23 would be
     # thermally undersized for a real 1 W linear pass element. Needs real
     # copper pour under both tabs at layout time.
     #
-    # HONEST, REAL, UNCLOSED GAP on the part number specifically: ST's
-    # own four suggested devices are listed above, and STD20NF06L is the
-    # one ST names as its "testing reference", so it's used here. Its
-    # AEC-Q101 status could NOT be confirmed this session - every attempt
-    # to reach a real datasheet (st.com direct, onsemi direct, Mouser
-    # mirror) either timed out or returned a block page, the same access
-    # problem this project already hit with NXP's own site. Every other
-    # active part on this board has a confirmed automotive qualification,
-    # so this is a genuine outstanding item, flagged the same way the
-    # AD8495 and MC33926 qualification gaps already are - NOT quietly
-    # assumed qualified. Also note the datasheet's own substitution
-    # warning before swapping it for a confirmed-AEC-Q101 part: "Others
-    # N-MOSFET can be used provided that they have similar threshold
-    # voltage and input capacitance; however regulator transient
-    # performances may have deviation to be checked" - so a substitute
-    # needs matching Vth AND Ciss, not merely matching V/I ratings.
-    # (MOSFET_N_BIG's own pre-existing "confirm D2PAK pin-to-terminal
-    # mapping before fab" flag, see its registration, applies here too.)
-    place(f"{LIB}:MOSFET_N_BIG", f"Q{20 + chip}",
-          "STD20NF06L VDD5 ext pass NMOS (ST Table 13 testing reference) - AEC-Q101 UNCONFIRMED, see comment",
+    # RESOLVED (a later pass) - the AEC-Q101 gap previously flagged here
+    # is closed, and closing it caught a real package bug at the same
+    # time. ST's Table 13 names STD20NF06L as its own "testing
+    # reference" NMOS, and ST makes a genuinely automotive-qualified
+    # version of that SAME device: STD20NF06LAG - "automotive-grade
+    # N-channel 60 V, 32 mOhm typ., 24 A, STripFET II Power MOSFET in a
+    # DPAK package", AEC-Q101 qualified. Identical process (STripFET
+    # II), voltage, RDS(on), current and package to the non-AG part, and
+    # it keeps the "L" (logic-level gate) that the charge-pump gate
+    # drive depends on. That matters specifically because of the
+    # datasheet's own substitution warning - "Others N-MOSFET can be
+    # used provided that they have similar threshold voltage and input
+    # capacitance; however regulator transient performances may have
+    # deviation to be checked" - a substitute needs matching Vth AND
+    # Ciss since the FET sits inside the regulator's control loop.
+    # Using the automotive grade of the very device ST tested with is
+    # the closest possible match, not a same-ratings lookalike.
+    #
+    # REAL BUG CAUGHT BY THIS: the earlier pass placed this part on
+    # MOSFET_N_BIG, which is a D2PAK (TO-263) footprint - but the whole
+    # STD20NF06L family is DPAK (TO-252). Following the part number
+    # through to its real package rather than assuming the existing
+    # big-MOSFET symbol would do is what surfaced it. Now on the new
+    # MOSFET_N_DPAK symbol (see its registration above). DPAK carries
+    # this stage's real ~1 W comfortably given copper pour under the tab.
+    #
+    # HONEST SOURCING NOTE: ST's own PDF could not be read this session
+    # (st.com timed out on every attempt, the same access problem this
+    # project already hit with NXP and onsemi). The AEC-Q101 status and
+    # the DPAK package are corroborated across three independent
+    # sources instead - Newark's parametric listing, ST's own product
+    # page title via search index, and the alldatasheet marking
+    # database - all agreeing on the same description. Worth a direct
+    # datasheet check before fab, but this is a genuinely different
+    # evidence level from the previous "unconfirmed".
+    place(f"{LIB}:MOSFET_N_DPAK", f"Q{20 + chip}",
+          "STD20NF06LAG automotive (AEC-Q101), DPAK - VDD5 ext pass NMOS, automotive grade of ST's own Table 13 reference",
           x0 + 260, y0 + 150,
           conn={'3': ('label', 'VIN_PROT'),                      # D -> VB
                 '1': ('label', f'L9779_VDDG_{chip}', 7.62),      # G <- VDD_G
@@ -2630,11 +2660,22 @@ place(f"{LIB}:C_V", "C74", "1nF flex-fuel filter (AEC-Q200)", 1252, 2032,
 #   confirmed from the datasheet's own text, an easy real mistake to
 #   make wiring this from memory), 27-30 OUT2, 32 CCP.
 #
-# HONEST FLAG: no explicit "AEC-Q100" qualification statement found in
-# the datasheet text pulled for this part either, despite it being
-# marketed specifically for automotive ETC and rated -40 to 125C - same
-# treatment as U19 above, used as the real right part with the
-# qualification gap flagged rather than assumed.
+# QUALIFICATION GAP RESOLVED (a later pass) - and the reason it was ever
+# open is worth recording, because it's a real sourcing lesson rather
+# than an error. The revision actually read for this part originally was
+# Rev. 10.0 (8/2014, Freescale-era), which genuinely contains NO AEC
+# qualification statement anywhere - so the flag was honest given the
+# document in hand. NXP's own revision history then settles it: Rev. 13
+# (8/2018) records "Added AEC-Q100 grade 1 qualified to Section 1 and
+# Section 3". Rev. 13 and later state it outright, twice - "meets the
+# stringent requirements of automotive applications and is fully
+# AEC-Q100 grade 1 qualified" in the general description, and a bulleted
+# "AEC-Q100 grade 1 qualified" in the features list. So the MC33926 IS
+# real AEC-Q100 Grade 1 (-40 to +125C), and the gap was a stale-revision
+# artifact. Real lesson for the rest of this board's parts: a missing
+# qualification statement can mean "not qualified" OR "qualified later
+# than the revision you happen to be reading" - check the revision date
+# and the revision history before recording an absence.
 #
 # SAFETY-CRITICAL NOTE: this hardware provides the real, necessary
 # pieces - two independent hardware disable inputs (D1/D2) separate

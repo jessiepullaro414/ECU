@@ -45,7 +45,9 @@ input, and full electronic throttle control (redundant pedal + throttle
 sensing, H-bridge motor drive). This is the expansion that used up the
 harness's last spare pins (J5 now has zero) and introduced this
 project's first two parts without a found AEC-Q100 statement (AD8495,
-MC33926) — see "Sensors and actuators" below and "Known open items".
+MC33926 — the MC33926 has since been **confirmed AEC-Q100 Grade 1**;
+the original absence turned out to be a stale datasheet revision, see
+"Known open items") — see "Sensors and actuators" below.
 
 One real routing problem came out of this expansion worth recording:
 the MC33926's GND pin (pin 5, AGND) sits on a 0.5mm-pitch QFN wedged
@@ -660,24 +662,59 @@ step that surfaced it.
   but each would have been a new unverified component, and this
   project's rule is that nothing ships unverified. Worth revisiting if
   fault reporting on these outputs becomes a requirement.
-- **No qualification confirmation for three of the newest parts.** The
-  AD8495 (EGT amp) and MC33926 (ETC H-bridge) are both the real,
-  correct parts for their jobs — the MC33926's own datasheet title is
-  literally "5.0 A Throttle Control H-Bridge" — but no AEC-Q100
-  statement was found in either datasheet, unlike every other active
-  part on this board. Flagged, not hidden; see "Sensors and actuators"
-  above. The third is `Q20`/`Q21`, the L9779WD-SPI's external `VDD5`
-  pass NMOS: `STD20NF06L` is ST's own named "testing reference" part
-  from the datasheet's Table 13, but its AEC-Q101 status could not be
-  confirmed — st.com, onsemi and the Mouser mirror all timed out or
-  returned block pages this session. Before substituting a
-  confirmed-AEC-Q101 part, note the datasheet's own warning: "Others
-  N-MOSFET can be used provided that they have similar threshold
-  voltage and input capacitance; however regulator transient
-  performances may have deviation to be checked" — a substitute needs
-  matching V<sub>th</sub> *and* C<sub>iss</sub>, not just matching
-  voltage/current ratings, because it sits inside the regulator's own
-  control loop.
+- **Qualification gaps: two of three now closed.**
+  - ~~**MC33926** (ETC H-bridge)~~ — **RESOLVED, and it was never
+    actually unqualified.** The revision originally read for this part
+    was Rev. 10.0 (8/2014, Freescale-era), which genuinely contains no
+    AEC statement anywhere, so the original flag was honest given the
+    document in hand. NXP's own revision history settles it: Rev. 13
+    (8/2018) records *"Added AEC-Q100 grade 1 qualified to Section 1 and
+    Section 3"*, and Rev. 13+ state it twice — in the general
+    description and as a features bullet. The MC33926 **is** AEC-Q100
+    Grade 1 (−40 to +125 °C). Real lesson worth keeping for the rest of
+    this BOM: a missing qualification statement can mean "not qualified"
+    *or* "qualified in a later revision than the one you happen to be
+    reading" — check the revision date and revision history before
+    recording an absence.
+  - ~~**`Q20`/`Q21`** (L9779WD-SPI `VDD5` pass NMOS)~~ — **RESOLVED.**
+    ST makes a genuinely automotive-qualified version of the very part
+    it names as its own Table 13 "testing reference":
+    **STD20NF06LAG** — "automotive-grade N-channel 60 V, 32 mΩ typ.,
+    24 A, STripFET II Power MOSFET in a DPAK package", AEC-Q101
+    qualified. Same process, voltage, R<sub>DS(on)</sub>, current and
+    package as the non-AG part, and it keeps the "L" logic-level gate
+    the charge-pump drive depends on. That matters because of ST's own
+    substitution warning — a replacement needs matching V<sub>th</sub>
+    *and* C<sub>iss</sub>, since the FET sits inside the regulator's
+    control loop — and using the automotive grade of the exact device ST
+    tested with is the closest possible match rather than a
+    same-ratings lookalike. **This also caught a real package bug:**
+    the part was previously placed on the D2PAK (`TO-263`) footprint,
+    but the whole STD20NF06L family is **DPAK** (`TO-252`). Now on a new
+    `MOSFET_N_DPAK` symbol. *Honest sourcing note:* st.com timed out on
+    every attempt this session, so AEC-Q101 status and package are
+    corroborated across three independent sources (Newark parametrics,
+    ST's own product-page title via search index, alldatasheet's marking
+    database) rather than ST's own PDF — worth a direct check before fab,
+    but a genuinely different evidence level from "unconfirmed".
+  - **AD8495** (EGT amp) — **still open, and not closeable by a part
+    swap.** No AEC-Q100-qualified dedicated thermocouple amplifier IC
+    exists at all. This was established exhaustively by the sibling
+    [thermo-pcb](https://github.com/jessiepullaro414/Thermo) project
+    (which checked MAX31855, MAX31856, AD8495, LTC2983 and MCP9600 —
+    including a full primary-source datasheet read of the MCP9600) and
+    independently re-confirmed here. The only genuinely compliant path
+    is architectural, not a substitution: an AEC-Q100 ADC reading the
+    raw thermocouple millivolts plus a local sensor for cold-junction
+    reference, with NIST ITS-90 linearisation and CJC done in firmware.
+    thermo-pcb took exactly that route with the **TI ADS1118-Q1**
+    (AEC-Q100 Grade 1, 16-bit SPI ADC, PGA, internal temp sensor TI's
+    own literature documents for thermocouple cold-junction
+    compensation), and its VSSOP-10 footprint is already hand-built and
+    verified there, so it is reusable. Adopting it here is a real
+    decision with real scope (new SPI device, plus K-type ITS-90
+    polynomial firmware this board's EGT channel does not currently
+    need) — deliberately not taken unilaterally.
 - **`Q20`/`Q21` are linear pass elements and dissipate real power.**
   `VDD5` is a linear regulator, so each NMOS burns (V<sub>B</sub> − 5 V)
   × I<sub>load</sub> continuously — roughly 9.4 V × ~100 mA ≈ 1 W per

@@ -11,23 +11,37 @@ Manifold's script-driven, kiutils + kicad-cli-verified generation workflow
 directly rather than reinventing it, but is a separate, much larger board:
 new directory, new schematic, not built on top of Manifold's layout.
 
-**Status: schematic complete, board placed + fully routed + DRC-clean.**
-Steps 2-9 (schematic) and step 10's layout/routing are done. The board
-is **172.5 × 114.4 mm, 8 layers, 224 footprints, 236 nets**, fully
-routed (0 unrouted) with GND planes poured on In1/In3/In6.Cu and +3V3 on
-In4.Cu. Real `kicad-cli pcb drc` reports **0 errors and 0 unconnected
-items** — the only remaining findings are the same 19 benign
-`lib_footprint_mismatch` warnings this project (and Manifold before it)
-has always carried.
+**Status: schematic complete, board placed + fully routed + DRC-clean,
+BOM done.** Steps 2-10 are all done. The board is **165.8 × 130.2 mm,
+8 layers, 234 footprints, 242 nets**, fully routed (0 unrouted) with GND
+planes poured on In1/In3/In6.Cu and +3V3 on In4.Cu. Real
+`kicad-cli pcb drc` reports **0 errors and 0 unconnected items** — the
+only remaining findings are the same benign `lib_footprint_mismatch`
+warnings this project (and Manifold before it) has always carried, now
+18 of them.
 
-Routing on a board this dense (236 nets, a 0.5mm-pitch H-bridge QFN, 8
+Routing on a board this dense (242 nets, a 0.5mm-pitch H-bridge QFN, 8
 layers) sits right at FreeRouting's practical convergence limit:
 repeated full regeneration+route cycles land at score ~992-993 with
 0-3 residual nets that vary run to run — ordinary autorouter variance,
 not a stuck design, and this specific committed board is one of the
-runs that landed at a genuine, DRC-verified zero.
+runs that landed at a genuine, DRC-verified zero. Widening part spacing
+to force convergence was tried and **ruled out** — see "Known open
+items".
 
-A **distributor-verified BOM is the last remaining piece.**
+**Every active part on this board is now automotive-qualified.** The
+three that once weren't are resolved: MC33926 was always AEC-Q100
+Grade 1 (a stale datasheet revision hid it), the L9779's `VDD5` pass
+NMOS became the AEC-Q101 `STD20NF06LAG`, and the unqualified AD8495
+thermocouple amplifier was replaced architecturally by an AEC-Q100
+ADS1118-Q1, because no qualified thermocouple amplifier IC exists to
+swap it for.
+
+The **BOM is generated, not hand-kept** — [`build_bom.py`](build_bom.py)
+reads the schematic directly and renders
+[`ECU_BOM.html`](ECU_BOM.html), a standalone parts-list page. What
+remains before fab is a purchasing pass for live pricing and stock, and
+one genuinely unfixed part: the 2.4 GHz balun (`FB1`).
 
 The board grew from 144 parts / 160 nets in a
 **sensor and actuator expansion** that closed real functional gaps found
@@ -641,7 +655,17 @@ hidden — each is either deliberately scoped out or flagged during the
 step that surfaced it.
 
 **Blocking fab:**
-- **No distributor-verified BOM.** The last real step.
+- ~~**No BOM.**~~ **DONE** — [`build_bom.py`](build_bom.py) generates it
+  straight from the schematic (68 orderable line items covering all 234
+  placements, with a coverage assertion so it cannot drift from the
+  board), and renders [`ECU_BOM.html`](ECU_BOM.html) as a standalone
+  parts-list page. Honest about scope: actives/connectors/
+  electromechanical carry real MPNs verified against manufacturer
+  datasheets during design, passives are specified parametrically
+  (value + package + AEC-Q200) rather than pinned to one vendor, and
+  **no live pricing or stock was checked** — that still needs a
+  purchasing pass on the day. Confirm availability of the Bosch CJ125
+  and the eight FGP3040G2 IGBTs first.
 **Not blocking, but worth knowing before re-routing:**
 - **Routing convergence needs a few attempts now.** The committed board
   is **fully routed — 0 unconnected items** — but since it grew to 234

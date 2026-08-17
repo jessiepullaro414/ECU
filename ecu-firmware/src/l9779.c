@@ -132,6 +132,44 @@ uint8_t l9779_read_dia1(uint8_t cs_pin) {
 
 /* Real, worth-having-now logic even before this board's real hardware
  * exists - mirrors mc33810_handle_status()'s role. */
+uint8_t l9779_read_dia8(uint8_t cs_pin) {
+    /* Same defensive double-send as l9779_read_dia1(), for the same
+     * real reason: whether DO's data belongs to the current frame's DIN
+     * address or the previous one is still an open question (see the
+     * file header), and issuing the read twice is correct either way. */
+    (void)l9779_transfer(cs_pin, l9779_word(L9779_ADDR_READ_DISPATCH, L9779_SUBADDR_DIA8));
+    uint16_t rx = l9779_transfer(cs_pin, l9779_word(L9779_ADDR_READ_DISPATCH, L9779_SUBADDR_DIA8));
+    return (uint8_t)((rx >> 1) & 0xFFu);   /* real DATA_OUT field, bits 8:1 */
+}
+
+/* Real IGN-side counterpart to l9779_handle_dia1(). Kept separate from
+ * the injector path deliberately: an ignition fault and an injector
+ * fault on the same cylinder call for different responses, and merging
+ * them would lose which one actually failed. */
+void l9779_handle_dia8(uint8_t dia8, int is_bank_1_4) {
+    unsigned ch;
+    for (ch = 0; ch < 4u; ch++) {
+        uint8_t code = (uint8_t)(((unsigned)dia8 >> (ch * 2u)) & L9779_DIA_FIELD_MASK);
+        if (code != L9779_DIA_OK) {
+            /* Real, and arguably more urgent than the injector case: a
+             * coil stuck on is a genuine overheat/damage path, and a
+             * dead coil dumps raw fuel into the exhaust. The chip's own
+             * over-current protection is the immediate backstop (see
+             * Section 6.10.2 - the pre-driver takes IGNx high-impedance
+             * itself on a detected short), so what firmware owes here is
+             * to NOTICE and stop trusting that cylinder, not to react in
+             * microseconds. Which cylinder maps to which channel comes
+             * from is_bank_1_4 exactly as on the injector side.
+             *
+             * The response policy itself is deliberately left open, the
+             * same scope boundary as l9779_handle_dia1() and
+             * mc33810_handle_status(): what to do about a dead cylinder
+             * is engine-strategy work, not driver work. */
+            (void)is_bank_1_4;
+        }
+    }
+}
+
 void l9779_handle_dia1(uint8_t dia1, int is_bank_1_4) {
     unsigned ch;
     for (ch = 0; ch < 4u; ch++) {

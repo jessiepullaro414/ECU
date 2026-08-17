@@ -158,12 +158,11 @@
  *     below conservatively sends the read command twice (same
  *     defensive pattern as mc33810_read_status()), which is correct
  *     either way.
- *   - IGN1-4's own real fault-diagnosis register (DIA_REG3 covers
- *     OUT13/OUT14/WDA_STATUS per what was read this session - IGN1-4's
- *     own diagnostic register location was not found in the pages
- *     read; a later pass needs to locate it before real ignition fault
- *     readback can be implemented. l9779_read_dia() only covers
- *     OUT1-5 (DIA_REG1/2) for now.
+ *   - (IGN1-4's fault-diagnosis register was on this list and is now
+ *     RESOLVED: it is DIA_REG8, subaddress 0x08, read-only, laid out
+ *     [7:6]=IGN4 ... [1:0]=IGN1 with the same 2-bit encoding as the
+ *     OUT channels. l9779_read_dia8()/l9779_handle_dia8() implement it
+ *     and main.c polls both halves.)
  *   - CONFIG_REG1-7's fields are real and documented in this file
  *     header's own research (VRS mode, MRD_OT_DIS, charge pump, VRS
  *     hysteresis/filter config, power-latch timeout, CAN error
@@ -230,6 +229,7 @@
 #define L9779_SUBADDR_DIA1    0x01u   /* OUT4/3/2/1 fault, see below */
 #define L9779_SUBADDR_DIA2    0x02u   /* OUT7/6/-/5 fault */
 #define L9779_SUBADDR_DIA3    0x03u   /* OUT14/13/WDA_STATUS */
+#define L9779_SUBADDR_DIA8    0x08u   /* IGN4/3/2/1 fault - see below */
 
 /* CONTR_REG1 (0x08) real payload fields - see file header. */
 #define L9779_CONTR1_OUT1   (1u << 7)
@@ -262,6 +262,22 @@
 #define L9779_DIA1_OUT2_SHIFT  2
 #define L9779_DIA1_OUT3_SHIFT  4
 #define L9779_DIA1_OUT4_SHIFT  6
+
+/* DIA_REG8 - the IGNITION pre-driver fault register. Real, from the
+ * register's own definition page: "DIA_REG8 / Diagnostic register 8 /
+ * Address: 1 0000 / Subaddress: 0000 1000 / Type: R (Read only) /
+ * Reset: 0000 0000", laid out [7:6]=IGN4_DIAG, [5:4]=IGN3_DIAG,
+ * [3:2]=IGN2_DIAG, [1:0]=IGN1_DIAG.
+ *
+ * Its 2-bit codes are the SAME encoding as the OUT channels above -
+ * 00=SCG, 01=OL, 10=SCB, 11=power stage OK - so the existing
+ * L9779_DIA_* constants apply unchanged, and the per-channel shift is
+ * again 2 bits with IGN1 in the low field. Convenient, but confirmed
+ * from the register's own listing rather than assumed by symmetry. */
+#define L9779_DIA8_IGN1_SHIFT  0
+#define L9779_DIA8_IGN2_SHIFT  2
+#define L9779_DIA8_IGN3_SHIFT  4
+#define L9779_DIA8_IGN4_SHIFT  6
 #define L9779_DIA_FIELD_MASK   0x3u
 
 /* Real, computed CTAR2 value for this board's confirmed 60MHz DSPI_0
@@ -355,5 +371,15 @@ uint8_t l9779_read_dia1(uint8_t cs_pin);
  * for this chip. is_bank_1_4: 1 for the cylinder 1-4 chip, 0 for the
  * cylinder 5-8 chip - same convention as mc33810.h. */
 void l9779_handle_dia1(uint8_t dia1, int is_bank_1_4);
+
+/* Real, complete: reads back DIA_REG8 (IGN1-4 fault status, 2 bits per
+ * channel, same L9779_DIA_* encoding as the OUT channels). Returns the
+ * raw byte; decode with L9779_DIA8_IGNn_SHIFT + L9779_DIA_FIELD_MASK. */
+uint8_t l9779_read_dia8(uint8_t cs_pin);
+
+/* Real fault-response policy for the ignition pre-drivers, the IGN-side
+ * counterpart to l9779_handle_dia1(). is_bank_1_4 follows the same
+ * convention: 1 for the cylinder 1-4 chip, 0 for cylinders 5-8. */
+void l9779_handle_dia8(uint8_t dia8, int is_bank_1_4);
 
 #endif /* L9779_H */

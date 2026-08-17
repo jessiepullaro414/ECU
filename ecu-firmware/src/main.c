@@ -353,15 +353,25 @@ static void read_sensors(void) {
 
 static void poll_driver_faults(void) {
     /* Real MC33810 -> L9779WD-SPI replacement (see l9779.h/README.md -
-     * MC33810 hit Last Time Buy, 2027-04-30). l9779_read_dia1() only
-     * covers OUT1-4 (this board's real 4 injector channels per chip) -
-     * IGN1-4's own real fault-diagnosis register wasn't located this
-     * session (see l9779.h's "NOT resolved" section), so ignition
-     * fault readback isn't polled yet, a real, named gap. */
+     * MC33810 hit Last Time Buy, 2027-04-30).
+     *
+     * BOTH halves of each chip's fault state are polled now. DIA_REG1
+     * covers OUT1-4 (this board's 4 injector channels per chip);
+     * DIA_REG8 covers IGN1-4, the ignition pre-drivers. The IGN register
+     * used to be a named gap here - it had not been located in the pages
+     * read at the time - and is now resolved (subaddress 0x08, same
+     * 2-bit-per-channel encoding as the injector side). Polling only the
+     * injector half would have meant a dead or shorted coil going
+     * completely unnoticed by firmware. */
     uint8_t dia1_0 = l9779_read_dia1(PIN_SPI_CS_INJ0);
     uint8_t dia1_1 = l9779_read_dia1(PIN_SPI_CS_INJ1);
     l9779_handle_dia1(dia1_0, 1);
     l9779_handle_dia1(dia1_1, 0);
+
+    uint8_t dia8_0 = l9779_read_dia8(PIN_SPI_CS_INJ0);
+    uint8_t dia8_1 = l9779_read_dia8(PIN_SPI_CS_INJ1);
+    l9779_handle_dia8(dia8_0, 1);
+    l9779_handle_dia8(dia8_1, 0);
 
     uint8_t diag_a = cj125_read_diag(PIN_SPI_CS_O2A);
     uint8_t diag_b = cj125_read_diag(PIN_SPI_CS_O2B);

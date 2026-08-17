@@ -66,11 +66,12 @@ typedef struct {
     uint16_t etc_ifb;
     /* EGT is no longer an ADC channel - it moved to the ADS1118-Q1 SPI
      * thermocouple front end (ads1118.h) so the board could use a real
-     * AEC-Q100 part. Kept as its own signed field in real engineering
-     * units rather than a raw count, since that driver already returns
-     * calibrated values. */
+     * AEC-Q100 part. Stored as a real temperature now that the NIST
+     * ITS-90 conversion is implemented; the cold-junction reading is
+     * kept alongside it because a cold junction drifting toward the
+     * ADS1118-Q1's own +105C limit is itself worth noticing. */
+    int32_t egt_centiC;      /* real exhaust gas temperature, hundredths of a degree C */
     int16_t egt_cj_centiC;   /* real cold-junction temperature, hundredths of a degree C */
-    int32_t egt_tc_nv;       /* real thermocouple voltage, nanovolts */
 } sensor_readings_t;
 
 static sensor_readings_t sensors;
@@ -308,16 +309,13 @@ static void read_sensors(void) {
         sensors.tps1     = read_adc_pin(PIN_ADC_TPS1);
         sensors.tps2     = read_adc_pin(PIN_ADC_TPS2);
         sensors.etc_ifb  = read_adc_pin(PIN_ADC_ETC_IFB);
-        /* Real EGT: two separate single-shot SPI reads - the thermocouple
-         * voltage and the on-die cold-junction temperature. Deliberately
-         * NOT run through iir_update(): that filter is written for
-         * uint16_t raw ADC counts, and these are already-calibrated
-         * signed engineering values in different units. Combining them
-         * into a real EGT temperature needs the NIST ITS-90 type-K
-         * tables, which ads1118.h documents as this driver's one real
-         * open gap - so both halves are read and stored honestly rather
-         * than a fabricated temperature being computed from them. */
-        sensors.egt_tc_nv     = ads1118_raw_to_nanovolts(ads1118_read_thermocouple_raw());
+        /* Real EGT, fully converted: ads1118_read_egt_centiC() reads the
+         * thermocouple and the on-die cold-junction sensor, adds the
+         * cold junction's own EMF back, and converts the total through
+         * NIST's ITS-90 Type-K data. Deliberately NOT run through
+         * iir_update(): that filter takes uint16_t raw ADC counts, and
+         * this is an already-calibrated signed temperature. */
+        sensors.egt_centiC    = ads1118_read_egt_centiC();
         sensors.egt_cj_centiC = ads1118_read_coldjunction_centiC();
         sensors_primed = 1;
     } else {
@@ -333,16 +331,13 @@ static void read_sensors(void) {
         sensors.tps1     = iir_update(sensors.tps1,    read_adc_pin(PIN_ADC_TPS1));
         sensors.tps2     = iir_update(sensors.tps2,    read_adc_pin(PIN_ADC_TPS2));
         sensors.etc_ifb  = iir_update(sensors.etc_ifb, read_adc_pin(PIN_ADC_ETC_IFB));
-        /* Real EGT: two separate single-shot SPI reads - the thermocouple
-         * voltage and the on-die cold-junction temperature. Deliberately
-         * NOT run through iir_update(): that filter is written for
-         * uint16_t raw ADC counts, and these are already-calibrated
-         * signed engineering values in different units. Combining them
-         * into a real EGT temperature needs the NIST ITS-90 type-K
-         * tables, which ads1118.h documents as this driver's one real
-         * open gap - so both halves are read and stored honestly rather
-         * than a fabricated temperature being computed from them. */
-        sensors.egt_tc_nv     = ads1118_raw_to_nanovolts(ads1118_read_thermocouple_raw());
+        /* Real EGT, fully converted: ads1118_read_egt_centiC() reads the
+         * thermocouple and the on-die cold-junction sensor, adds the
+         * cold junction's own EMF back, and converts the total through
+         * NIST's ITS-90 Type-K data. Deliberately NOT run through
+         * iir_update(): that filter takes uint16_t raw ADC counts, and
+         * this is an already-calibrated signed temperature. */
+        sensors.egt_centiC    = ads1118_read_egt_centiC();
         sensors.egt_cj_centiC = ads1118_read_coldjunction_centiC();
 
     }

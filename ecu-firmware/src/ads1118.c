@@ -7,6 +7,7 @@
 #include "dspi.h"
 #include "siul2.h"
 #include "ecu_pins.h"
+#include "ktype_table.h"
 
 /* Real 32-bit transaction (datasheet Section 9.5.7.1): four bytes -
  * two of conversion result followed by two of Config readback, MSB
@@ -82,4 +83,71 @@ int32_t ads1118_raw_to_nanovolts(int16_t raw) {
      * At full scale this is 32767 * 7813 = ~256 mV, comfortably inside
      * int32_t, so no overflow concern. */
     return (int32_t)raw * (int32_t)ADS1118_TC_NV_PER_LSB;
+}
+
+/* --- Type-K conversion, from NIST's own ITS-90 data ------------------
+ * See inc/ktype_table.h and tools/gen_ktype_table.py. The table maps
+ * temperature -> EMF and is strictly monotonic, so it serves both
+ * directions: forward by index for cold-junction compensation, reverse
+ * by binary search for the measurement itself. All integer maths - this
+ * codebase assumes no FPU anywhere. */
+
+int32_t ktype_emf_uv_from_centiC(int32_t temp_centiC) {
+    const int32_t lo_c  = (int32_t)KTYPE_T_MIN_C * 100;
+    const int32_t step  = (int32_t)KTYPE_T_STEP_C * 100;
+    const int32_t hi_c  = lo_c + step * (KTYPE_COUNT - 1);
+
+    /* Clamp rather than extrapolate. The table already spans well past
+     * any real cold-junction temperature, so hitting an end means
+     * something is wrong upstream, not that the range is too narrow. */
+    if (temp_centiC <= lo_c) return KTYPE_EMF_UV[0];
+    if (temp_centiC >= hi_c) return KTYPE_EMF_UV[KTYPE_COUNT - 1];
+
+    int32_t idx  = (temp_centiC - lo_c) / step;
+    int32_t rem  = (temp_centiC - lo_c) - idx * step;
+    int32_t e_lo = KTYPE_EMF_UV[idx];
+    int32_t e_hi = KTYPE_EMF_UV[idx + 1];
+    return e_lo + ((e_hi - e_lo) * rem) / step;
+}
+
+int32_t ktype_centiC_from_emf_uv(int32_t emf_uv) {
+    if (emf_uv <= KTYPE_EMF_UV[0]) {
+        return (int32_t)KTYPE_T_MIN_C * 100;
+    }
+    if (emf_uv >= KTYPE_EMF_UV[KTYPE_COUNT - 1]) {
+        return ((int32_t)KTYPE_T_MIN_C + (int32_t)KTYPE_T_STEP_C * (KTYPE_COUNT - 1)) * 100;
+    }
+
+    /* Binary search the monotonic EMF column for the bracketing pair. */
+    int lo = 0, hi = KTYPE_COUNT - 1;
+    while (hi - lo > 1) {
+        int mid = (lo + hi) / 2;
+        if (KTYPE_EMF_UV[mid] <= emf_uv) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+
+    int32_t e_lo = KTYPE_EMF_UV[lo];
+    int32_t e_hi = KTYPE_EMF_UV[hi];
+    int32_t t_lo = ((int32_t)KTYPE_T_MIN_C + (int32_t)KTYPE_T_STEP_C * lo) * 100;
+    int32_t span = e_hi - e_lo;
+    if (span == 0) {
+        return t_lo;   /* cannot happen on a monotonic table; defensive */
+    }
+    return t_lo + (((int32_t)KTYPE_T_STEP_C * 100) * (emf_uv - e_lo)) / span;
+}
+
+int32_t ads1118_read_egt_centiC(void) {
+    /* A thermocouple reports only the DIFFERENCE between its tip and its
+     * cold junction, so the cold junction's own EMF has to be added back
+     * before the total can be converted. Skipping this step is the
+     * classic thermocouple mistake: readings would track ambient
+     * temperature instead of being independent of it. */
+    int32_t tc_nv    = ads1118_raw_to_nanovolts(ads1118_read_thermocouple_raw());
+    int32_t tc_uv    = tc_nv / 1000;
+    int32_t cj_centiC = (int32_t)ads1118_read_coldjunction_centiC();
+    int32_t cj_uv    = ktype_emf_uv_from_centiC(cj_centiC);
+    return ktype_centiC_from_emf_uv(tc_uv + cj_uv);
 }

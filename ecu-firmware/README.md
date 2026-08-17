@@ -651,17 +651,28 @@ explicit rather than blurred.
   occupy (PD[9]) to become this device's chip select, so it cost no new
   MCU pin — `siul2.c`'s own earlier Table 4-1 check had already
   established those Port D analog pads are usable as GPIO.
-  **Real, named gap, deliberately not faked:** the ITS-90 type-K
-  conversion (cold-junction temperature → equivalent voltage → total
-  voltage → temperature) is *not* implemented. NIST's own table
-  download returned an HTML page rather than data, and this project does
-  not invent numeric constants from recall. The SPI layer, config,
-  both raw reads and the voltage scaling are complete and real; only
-  that final conversion is outstanding, and `ads1118.h` records the two
-  real anchor points TI's datasheet does confirm (50.644 mV at 1250 °C
-  against a 0 °C cold junction, 52.171 mV against −40 °C). `main.c`
-  stores both halves honestly rather than computing a fabricated
-  temperature from them.
+  **The ITS-90 type-K conversion is now real too** — this was the
+  driver's last open gap. The coefficients come from **NIST's own
+  Standard Reference Database 60** (the online form of NIST Monograph
+  175, DOI `10.18434/T4S888`). Reaching them needed a real browser:
+  NIST serves those tables from a Blazor app that renders client-side,
+  so plain HTTP fetches return an empty shell — which is exactly why an
+  earlier pass recorded this as blocked and declined to invent numbers.
+  Only the **inverse** coefficient set is used, because NIST's page
+  rounds the forward ones to ~3 significant figures; since the curve is
+  strictly monotonic, one table built from the inverse function serves
+  both directions — forward for cold-junction compensation, reverse by
+  binary search for the measurement.
+  [`tools/gen_ktype_table.py`](tools/gen_ktype_table.py) generates
+  [`inc/ktype_table.h`](inc/ktype_table.h) (130 entries, −40 to
+  1250 °C) and **validates it against two reference points TI quotes
+  independently from NIST**: 1250 °C → 50.644 mV and −40 °C →
+  −1.527 mV. The generated table hits 50.6436 and −1.5272 — a genuine
+  third-party check, not a self-consistency test. Worst interpolation
+  error is 0.033 °C, inside NIST's own ±0.05 °C for the inverse
+  function, and the integer round-trip the firmware actually performs
+  was verified at 0.03 °C worst case. All integer maths, no FPU
+  assumed.
 - **Real watchdog (SWT) driver, closing a standing TODO** ([`inc/swt.h`](inc/swt.h),
   [`src/swt.c`](src/swt.c)) — a whole new, previously-untouched chapter
   (Chapter 33, "Software Watchdog Timer", 9 self-contained pages) read

@@ -144,31 +144,36 @@ int16_t ads1118_read_coldjunction_centiC(void);
 int32_t ads1118_raw_to_nanovolts(int16_t raw);
 
 /* ---------------------------------------------------------------------
- * REAL, DELIBERATELY UNIMPLEMENTED - the one genuine gap in this driver.
+ * Type-K conversion. RESOLVED (a later pass) - this was the driver's one
+ * open gap.
  *
- * Turning (thermocouple microvolts + cold-junction temperature) into a
- * real EGT reading needs the NIST ITS-90 type-K tables: the forward
- * polynomial to convert the cold-junction temperature into the
- * equivalent voltage that must be ADDED to the measured voltage (a
- * thermocouple only ever reports the DIFFERENCE between its tip and its
- * cold junction - TI's datasheet states this explicitly), and then the
- * inverse polynomial to turn that total voltage back into a temperature.
+ * A thermocouple only ever reports the DIFFERENCE between its tip and
+ * its cold junction, so turning a reading into a real temperature takes
+ * three steps: find the EMF the cold junction itself is worth, add it to
+ * the measured voltage, then convert that total back to a temperature.
+ * Both directions come from one strictly-monotonic table generated from
+ * NIST's own ITS-90 coefficients - see inc/ktype_table.h and
+ * tools/gen_ktype_table.py for the provenance and validation.
  *
- * Those coefficients were NOT sourced from a primary reference this
- * session - NIST's own ITS-90 table download returned an HTML page
- * rather than data, and this project does not fabricate numeric
- * constants from recall. Two real anchor points ARE confirmed, from TI's
- * own datasheet quoting NIST: a K-type thermocouple at 1250C produces
- * 50.644 mV referenced to a 0C cold junction, and 52.171 mV referenced
- * to a -40C cold junction (implying the cold junction at -40C is worth
- * -1.527 mV). Not enough to build a real curve from, so no curve is
- * invented here.
- *
- * Closing this needs the real NIST ITS-90 type-K coefficient set (or its
- * reference table), then the same piecewise-table-plus-integer-
- * interpolation treatment clt_sensor.c/iat_sensor.c already use. The
- * rest of this driver - SPI, config, both raw reads, the voltage scaling
- * - is complete and real, so only this last conversion is outstanding.
+ * The earlier pass could not reach NIST's data (its site renders the
+ * coefficient tables client-side, so plain fetches return an empty
+ * shell) and correctly declined to invent the numbers. It is sourced
+ * now, and cross-checked against two reference points TI quotes
+ * independently from NIST.
  * ------------------------------------------------------------------- */
+
+/* Forward: the EMF a junction at this temperature produces, referenced
+ * to a 0 C cold junction. Used for cold-junction compensation. Input is
+ * hundredths of a degree C, output microvolts. */
+int32_t ktype_emf_uv_from_centiC(int32_t temp_centiC);
+
+/* Inverse: the junction temperature, in hundredths of a degree C, that
+ * produces this EMF against a 0 C cold junction. */
+int32_t ktype_centiC_from_emf_uv(int32_t emf_uv);
+
+/* The whole EGT measurement in one call: reads the thermocouple and the
+ * on-die cold-junction sensor, compensates, and returns the real
+ * exhaust gas temperature in hundredths of a degree C. */
+int32_t ads1118_read_egt_centiC(void);
 
 #endif /* ADS1118_H */

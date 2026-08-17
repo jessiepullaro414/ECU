@@ -36,17 +36,29 @@
  * DIA_REG1's sub-address is the literal byte 0x01, not a scaled/
  * shifted value - confirmed against Table 55's own listed values).
  *
- * REAL, NOT-YET-RESOLVED GAP - do not guess this: the parity bit's own
- * calculation (which of the other 15 bits it covers, and whether real
- * silicon actually rejects a frame with a wrong parity bit or just
- * ignores it) was not found in the text extracted this session. Every
- * l9779_word() built below sends parity=0 unconditionally - a real,
- * honest placeholder, not a computed value. If real hardware enforces
- * odd parity strictly, transfers built this way may be silently
- * discarded (Section 6.16.2 only says a frame with the WRONG BIT COUNT
- * is discarded - it does not explicitly say what happens on a parity
- * mismatch specifically, so this may or may not matter until it's
- * checked against real hardware or a fuller datasheet pass).
+ * RESOLVED (a later pass) - the parity bit is now real and computed.
+ * The earlier pass could not find its definition and honestly sent
+ * parity=0 unconditionally, flagging that frames might be silently
+ * rejected on real hardware. A fuller read of the command-register
+ * tables settles it: every per-command frame table (Tables 56, 57 and
+ * their siblings) lists bit 0 for BOTH directions as literally
+ * "Odd Parity", matching Section 6.16.2's own prose that DIN consists
+ * of "a five address bit, eight data bit and data parity".
+ *
+ * Odd parity here means the complete 16-bit frame must contain an odd
+ * number of set bits, so bit 0 is set exactly when bits 15:1 already
+ * hold an even number. l9779_word() below computes it by XOR-folding
+ * the word - no loop, no lookup table, a handful of instructions on a
+ * path that runs once per SPI transfer.
+ *
+ * Verified exhaustively rather than by inspection: all 32 addresses x
+ * 256 data values (8192 frames, the entire input space this function
+ * can ever be called with) were checked to confirm each result has odd
+ * parity AND that neither the 5-bit address nor the 8-bit payload is
+ * disturbed by the parity bit. Worth doing, because sending parity=0
+ * on a chip that enforces it would have looked exactly like "the SPI
+ * bus is fine but the outputs never fire" - the same class of silent
+ * failure as the AND-logic trap already documented below.
  *
  * REAL, CONFIRMED, CRITICAL INIT REQUIREMENT (Table 57, START_REACT,
  * address 0x0D): "After a reset (default state)... OUT_DIS=1 and the
@@ -138,7 +150,8 @@
  *     bits [1:0] = OUT5 (unused by this board's wiring).
  *
  * NOT resolved this session - real, named gaps, not guessed:
- *   - The parity bit algorithm (see above).
+ *   - (The parity bit algorithm was on this list and is now RESOLVED -
+ *     see above.)
  *   - Whether DO's data is for the SAME frame's DIN address or the
  *     PREVIOUS frame's (MC33810-style one-frame-delayed pipelining) -
  *     not explicitly stated in the text extracted. l9779_read_dia()
@@ -281,7 +294,23 @@
  * data (bits 8:1), parity forced to 0 (see file header - real gap, not
  * computed). addr5 must be a real L9779_ADDR_* value. */
 static inline uint16_t l9779_word(uint8_t addr5, uint8_t data8) {
-    return (uint16_t)(((uint16_t)(addr5 & 0x1Fu) << 10) | ((uint16_t)data8 << 1));
+    uint16_t frame = (uint16_t)(((uint16_t)(addr5 & 0x1Fu) << 10)
+                                | ((uint16_t)data8 << 1));
+    /* Real ODD parity in bit 0 - see the file header for provenance.
+     * Odd parity means the whole 16-bit frame must contain an odd number
+     * of set bits, so bit 0 is set exactly when bits 15:1 already hold an
+     * even number. Folding the word in half repeatedly leaves the parity
+     * of the whole value in the low bit; no loop, no table, and it costs
+     * a handful of instructions on a path that runs per SPI transfer. */
+    uint16_t v = frame;
+    v ^= (uint16_t)(v >> 8);
+    v ^= (uint16_t)(v >> 4);
+    v ^= (uint16_t)(v >> 2);
+    v ^= (uint16_t)(v >> 1);
+    /* v's low bit now holds the parity of bits 15:1. Odd parity wants
+     * the opposite, so flip it - XOR rather than ~ keeps everything
+     * unsigned and avoids an integer-promotion sign conversion. */
+    return (uint16_t)(frame | (uint16_t)((v & 1u) ^ 1u));
 }
 
 /* Real, callable: brings up DSPI_0's CTAR2 (L9779_CTAR2 above) and

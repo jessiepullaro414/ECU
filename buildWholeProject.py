@@ -38,6 +38,7 @@ Usage:
                                                   # autorouting pass
 """
 import argparse
+import glob
 import os
 import shutil
 import subprocess
@@ -109,6 +110,31 @@ def find_real_toolchain():
         found = shutil.which(name)
         if found:
             return found
+
+    # Nothing on PATH - look where S32 Design Studio for POWER
+    # ARCHITECTURE actually installs its cross compiler. S32DS-PA does
+    # not add itself to PATH, so without this the common case (a normal
+    # default-path install) still reports "no toolchain".
+    #
+    # REAL TRAP THIS GUARDS AGAINST, found the hard way on this machine:
+    # NXP ships TWO separate products both called "S32 Design Studio",
+    # split by architecture. "S32 Design Studio for S32 Platform" (e.g.
+    # C:\NXP\S32DS.3.6.1) is the ARM line for S32K/S32G - its bundled
+    # GCCs are arm32-eabi/arm64-eabi ONLY and cannot build this MCU at
+    # all. The MPC5606B is Power Architecture (Qorivva, VLE-only) and
+    # needs "S32 Design Studio for Power Architecture" (S32DS-PA), which
+    # ships powerpc-eabivle GCC under Cross_Tools. Having the ARM one
+    # installed looks like success until you check the target triple, so
+    # the globs below deliberately match only real PA install shapes.
+    for pattern in (
+            r"C:\NXP\*Power*\**\powerpc-eabivle-*\bin\powerpc-eabivle-gcc.exe",
+            r"C:\NXP\*\Cross_Tools\powerpc-eabivle-*\bin\powerpc-eabivle-gcc.exe",
+            r"C:\Freescale\*\Cross_Tools\powerpc-eabivle-*\bin\powerpc-eabivle-gcc.exe",
+            r"C:\*S32DS*Power*\**\powerpc-eabivle-gcc.exe",
+    ):
+        hits = sorted(glob.glob(pattern, recursive=True))
+        if hits:
+            return hits[-1]   # newest-sorting install wins
     return None
 
 
@@ -121,13 +147,20 @@ def build_firmware():
     if gcc is None:
         print(
             "\n=== Firmware compile: SKIPPED ===\n"
-            "No real PowerPC-EABI/VLE toolchain found on PATH, and\n"
-            "ECU_FW_TOOLCHAIN_PREFIX is not set. This project has never had\n"
-            "one available locally (see ecu-firmware/README.md's own\n"
-            "'Toolchain' section) - this is a real, honest gap, not a bug in\n"
-            "this script. Install NXP S32 Design Studio (or any real\n"
-            "powerpc-eabivle GCC) and either put it on PATH or set\n"
-            "ECU_FW_TOOLCHAIN_PREFIX to its gcc executable, then re-run."
+            "No real PowerPC-EABI/VLE toolchain found - not on PATH, and not\n"
+            "at any known S32 Design Studio for Power Architecture install\n"
+            "path.\n\n"
+            "WATCH OUT: NXP ships TWO products called 'S32 Design Studio',\n"
+            "split by architecture, and only one can build this MCU.\n"
+            "  * 'S32 Design Studio for S32 Platform' (e.g. C:\\NXP\\S32DS.3.6.1)\n"
+            "    is the ARM line for S32K/S32G. Its bundled GCCs are\n"
+            "    arm32-eabi / arm64-eabi ONLY - no PowerPC target at all, so\n"
+            "    having it installed does NOT help here.\n"
+            "  * 'S32 Design Studio for Power Architecture' (S32DS-PA) is the\n"
+            "    one this board needs: it lists MPC5606B as a supported device\n"
+            "    and ships powerpc-eabivle GCC under Cross_Tools.\n\n"
+            "Install S32DS-PA (free), or point ECU_FW_TOOLCHAIN_PREFIX at any\n"
+            "real powerpc-eabivle gcc executable, then re-run."
         )
         return False
 

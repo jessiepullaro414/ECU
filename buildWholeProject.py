@@ -63,7 +63,20 @@ LINKER_SCRIPT = os.path.join(FW_DIR, "link", "mpc5606b.ld")
 # code is valid C99; the compiler just had to be told which language it
 # was reading. gnu99 rather than c99 keeps GCC's inline-asm extensions,
 # which intc.c relies on for mtspr/mfspr.
-REAL_CFLAGS = ["-mvle", "-mcpu=e200z0", "-std=gnu99", "-Wall", "-c", "-I", FW_INC]
+# The warning set is deliberately strict, and the codebase is clean under
+# it. -Wconversion in particular earns its place in register-level code:
+# it is what would catch a mask or shift that silently truncates on its
+# way into a hardware register. Adopting it only works because the three
+# benign hits it originally found were made explicit at the source rather
+# than suppressed - so anything it reports from here is worth reading.
+#
+# The only expected output is two -Wunused-function warnings for
+# injection.c's us_to_ticks/angle_to_ticks, which are documented as
+# deliberately not yet wired up (they wait on the crank trigger wheel's
+# tooth count).
+REAL_CFLAGS = ["-mvle", "-mcpu=e200z0", "-std=gnu99",
+               "-Wall", "-Wextra", "-Wconversion", "-Wsign-compare", "-Wshadow",
+               "-c", "-I", FW_INC]
 
 
 def run_step(name, cmd, cwd):

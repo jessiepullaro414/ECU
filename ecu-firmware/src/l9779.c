@@ -135,7 +135,7 @@ uint8_t l9779_read_dia1(uint8_t cs_pin) {
 void l9779_handle_dia1(uint8_t dia1, int is_bank_1_4) {
     unsigned ch;
     for (ch = 0; ch < 4u; ch++) {
-        uint8_t code = (uint8_t)((dia1 >> (ch * 2u)) & L9779_DIA_FIELD_MASK);
+        uint8_t code = (uint8_t)(((unsigned)dia1 >> (ch * 2u)) & L9779_DIA_FIELD_MASK);
         if (code != L9779_DIA_OK) {
             /* Real, same-class concern as mc33810_handle_status(): a
              * shorted or open injector output left latched is a real

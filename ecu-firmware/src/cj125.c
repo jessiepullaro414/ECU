@@ -54,7 +54,7 @@ void cj125_handle_diag(uint8_t diag, int is_bank_a) {
     uint8_t heater = (diag >> CJ125_DIAG_HEATER_SHIFT) & CJ125_DIAG_FIELD_MASK;
     uint8_t sensor = (diag >> CJ125_DIAG_SENSOR_SHIFT) & CJ125_DIAG_FIELD_MASK;
     uint8_t un     = (diag >> CJ125_DIAG_UN_SHIFT) & CJ125_DIAG_FIELD_MASK;
-    uint8_t vm     = (diag >> CJ125_DIAG_VM_SHIFT) & CJ125_DIAG_FIELD_MASK;
+    uint8_t vm     = (uint8_t)(((unsigned)diag >> CJ125_DIAG_VM_SHIFT) & CJ125_DIAG_FIELD_MASK);
 
     if (heater != CJ125_DIAG_NO_FAILURE) {
         /* Real heater fault (open load / short to ground / short to

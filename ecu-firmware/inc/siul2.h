@@ -52,7 +52,11 @@
  *   0 = GPIO, 1/2/3 = alternate function 1/2/3 - WHICH real peripheral
  *   signal each AF number maps to is per-pin, from Table 4-1
  *   ("Functional port pins") - not encoded here, see the TODO below. */
-#define PCR_AF(n)    (((uint32_t)(n) & 0x3u) << PCR_PA_SHIFT)
+/* Cast to uint16_t is deliberate and provably lossless: the mask
+ * bounds n to 3, so the widest result is 3 << 10 = 0x0C00, well
+ * inside 16 bits. Stating it explicitly keeps -Wconversion usable as
+ * a standing check, so a genuine truncation bug would stand out. */
+#define PCR_AF(n)    ((uint16_t)(((uint32_t)(n) & 0x3u) << PCR_PA_SHIFT))
 
 /* Direct 16-bit register write - real, safe to use once the caller has
  * the correct PCR index (see the file-level warning above). */

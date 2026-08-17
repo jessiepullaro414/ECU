@@ -12,21 +12,20 @@ script:
     in ecu-pcb/README.md. This part is real and complete - every one of
     these scripts is the actual tool that built the real, DRC-clean
     board this project already has.
-  - Firmware: this project has NEVER had a local PowerPC-EABI/VLE
-    toolchain available (a standing, honestly-documented gap throughout
-    ecu-firmware's own README/file headers) and still doesn't have a
-    real linker script or startup/crt0 file (intc.S provides the real
-    IVOR4 exception-entry stub, but not full reset-vector startup code -
-    see intc.S's own header). This script does NOT claim to produce a
-    linked, flashable firmware image. What it DOES do, honestly: if a
-    real VLE-capable PowerPC-EABI GCC is found on PATH or via the
-    ECU_FW_TOOLCHAIN_PREFIX environment variable, it compiles
-    (`-c`, syntax/type-check only, no link) every real .c/.S file in
-    ecu-firmware/src/ against the real, confirmed-necessary `-mvle`
-    flag (e200z0h is VLE-only, see ecu-firmware/inc/intc.h's own file
-    header) and reports real per-file pass/fail. If no real toolchain
-    is found, it says so plainly and skips straight to a summary -
-    it does not fabricate a pass.
+  - Firmware: compiles every .c/.S file in ecu-firmware/src/ with the
+    real, confirmed-necessary `-mvle` flag (e200z0h is VLE-only) and
+    then LINKS them into ecu-firmware/build/ecu.elf against the real
+    MPC5606B memory map in link/mpc5606b.ld, using this project's own
+    reset entry in src/startup.S. It finishes by checking the linked
+    image actually carries a valid boot header, because on this part
+    that is the difference between a chip that runs and one that
+    silently parks itself in static mode.
+    This used to be a compile-only check: for most of this project's
+    life no local PowerPC-EABI/VLE toolchain existed, and there was no
+    linker script or reset-vector startup code. Both gaps are closed;
+    the toolchain is found automatically (see find_real_toolchain) or
+    via ECU_FW_TOOLCHAIN_PREFIX. If none is found the script says so
+    plainly rather than fabricating a pass.
 
 Usage:
     python buildWholeProject.py                 # both PCB and firmware
@@ -49,6 +48,8 @@ PCB_DIR = os.path.join(HERE, "ecu-pcb")
 FW_DIR = os.path.join(HERE, "ecu-firmware")
 FW_INC = os.path.join(FW_DIR, "inc")
 FW_SRC = os.path.join(FW_DIR, "src")
+FW_BUILD = os.path.join(FW_DIR, "build")
+LINKER_SCRIPT = os.path.join(FW_DIR, "link", "mpc5606b.ld")
 
 # Real, confirmed-necessary compile flag for this exact core (e200z0h is
 # a VLE-only implementation - see ecu-firmware/inc/intc.h's own file
@@ -179,20 +180,76 @@ def build_firmware():
     src_files = sorted(
         f for f in os.listdir(FW_SRC) if f.endswith((".c", ".S"))
     )
+    os.makedirs(FW_BUILD, exist_ok=True)
     all_ok = True
+    objects = []
     for f in src_files:
         src_path = os.path.join(FW_SRC, f)
-        ok = run_step(f"Compile {f}", [gcc] + REAL_CFLAGS + [src_path, "-o", os.devnull], FW_SRC)
+        # Object names KEEP THE SOURCE EXTENSION - "intc.c" -> "intc.c.o",
+        # never "intc.o". This project really does contain both intc.c and
+        # intc.S, and the usual <stem>.o convention makes the second one
+        # silently overwrite the first. The link then fails with every
+        # symbol from intc.c undefined, which is exactly how this was found
+        # on the first real link attempt.
+        obj = os.path.join(FW_BUILD, f + ".o")
+        ok = run_step(f"Compile {f}", [gcc] + REAL_CFLAGS + [src_path, "-o", obj], FW_SRC)
         all_ok = all_ok and ok
+        if ok:
+            objects.append(obj)
 
-    print(
-        "\nNOTE: this compiles each file (-c, no link) as a real syntax/\n"
-        "type check only. This project has no real linker script or full\n"
-        "crt0 startup file yet (see ecu-firmware/inc/intc.h and intc.S's\n"
-        "own file headers for the real, honestly-documented remaining\n"
-        "gap) - a linked, flashable image is NOT produced by this script."
-    )
-    return all_ok
+    if not all_ok:
+        print("\nCompile failed - not attempting the link.")
+        return False
+
+    # Real link against the MPC5606B memory map.
+    #
+    # ld is invoked DIRECTLY rather than through the gcc driver. The
+    # driver route (gcc -nostdlib -T ... -lgcc) fails on this toolchain
+    # with "collect2: ld returned 123 exit status" and produces no
+    # diagnostic at all, even under -Wl,--verbose, while the identical
+    # link driven straight through ld succeeds and yields a correct
+    # image. Not worth chasing a silent driver failure when the tool
+    # underneath it works.
+    #
+    # libgcc is still required despite -nostdlib: injection.c's 64-bit
+    # division pulls in compiler helper routines such as __udivdi3. Its
+    # path is asked of the compiler rather than guessed.
+    ld = gcc.replace("gcc.exe", "ld.exe")
+    libgcc = subprocess.run([gcc, "-mvle", "-mcpu=e200z0",
+                             "-print-libgcc-file-name"],
+                            capture_output=True, text=True).stdout.strip()
+    elf = os.path.join(FW_BUILD, "ecu.elf")
+    link_cmd = [ld, "-T", LINKER_SCRIPT,
+                "-Map=" + os.path.join(FW_BUILD, "ecu.map"),
+                "-o", elf] + objects
+    if libgcc and os.path.isfile(libgcc):
+        link_cmd.append(libgcc)
+    if not run_step("Link ecu.elf", link_cmd, FW_SRC):
+        return False
+
+    print("\n=== Image checks ===")
+    size_bin = gcc.replace("gcc.exe", "size.exe")
+    if os.path.isfile(size_bin):
+        subprocess.run([size_bin, elf])
+
+    # A linked ELF only means something if the part will actually boot it,
+    # and on this MCU that hinges on one 32-bit word. The SSCM scans each
+    # boot sector for BOOT_ID = 0x5A and, finding none, hands over to the
+    # BAM and parks the core in static mode - the chip simply never runs,
+    # with no other symptom. So verify the RCHW landed rather than assume.
+    objdump = gcc.replace("gcc.exe", "objdump.exe")
+    if os.path.isfile(objdump):
+        out = subprocess.run([objdump, "-s", "-j", ".bootsector", elf],
+                             capture_output=True, text=True).stdout
+        packed = "".join(out.split()).lower()
+        if "005a0000" in packed:
+            print("Boot header OK: RCHW BOOT_ID=0x5A present at flash base")
+        else:
+            print("WARNING: RCHW 0x005A0000 not found in .bootsector -")
+            print("         the SSCM would find no valid boot sector.")
+            print(out)
+            return False
+    return True
 
 
 def main():

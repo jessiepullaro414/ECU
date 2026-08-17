@@ -792,16 +792,80 @@ explicit rather than blurred.
 
 ## Toolchain
 
-**S32 Design Studio** (free, Eclipse/GCC/GDB-based) — confirmed to
-support the MPC5606B directly. This is the same toolchain
-`../ecu-pcb/README.md` already assumes for programming over the
-board's USB-C/JTAG path.
+**The firmware now compiles and links into a real, bootable image.**
+`powerpc-eabivle-gcc` 4.9.4 (built for `ELe200`, the e200 core family
+this MCU uses) builds all 18 source files — including the hand-written
+VLE assembly in `startup.S` and `intc.S` — and links them against
+[`link/mpc5606b.ld`](link/mpc5606b.ld) into `build/ecu.elf`. Run it
+from the repo root:
+
+```bash
+python buildWholeProject.py --firmware-only
+```
+
+Current image: **12,932 bytes of flash** (of 1 MB) and **3,036 bytes of
+SRAM** (of 80 KB) — plenty of headroom.
+
+**Watch out for the wrong product.** NXP ships two separate IDEs both
+called *S32 Design Studio*, split by architecture, and only one can
+build this MCU:
+
+- *S32 Design Studio for **S32 Platform*** is the **ARM** line
+  (S32K/S32G). Its bundled GCCs are `arm32-eabi`/`arm64-eabi` only —
+  no PowerPC target at all. Having it installed does not help.
+- *S32 Design Studio for **Power Architecture*** (S32DS-PA) is the one
+  this board needs. It lists MPC5606B as a supported device and ships
+  `powerpc-eabivle` GCC under `Cross_Tools`.
+
+`buildWholeProject.py` searches the real S32DS-PA install locations
+automatically, and also finds a standalone `powerpc-eabivle-N_N`
+toolchain tree; `ECU_FW_TOOLCHAIN_PREFIX` overrides both.
+
+NXP's **TRK-MPC5606B StarterTRAK** kit ships real reference code for
 
 NXP's **TRK-MPC5606B StarterTRAK** kit ships real reference code for
 this exact part's peripherals (SCI/CAN/LIN/GPIO) — a genuine reference
 worth pulling if any of the remaining named gaps above (real clock
 divider values, bit-timing/baud-rate figures, CJ125 support) need a
 second real source to check against.
+
+## Boot and startup
+
+Two files carry everything between reset and `main()`, and both are
+built from the MPC5606BK Reference Manual rather than a vendor template.
+
+**[`link/mpc5606b.ld`](link/mpc5606b.ld)** — code flash 1 MB at
+`0x0000_0000`, L2SRAM 80 KB at `0x4000_0000` (Table 31-3). It also
+carries two `ASSERT`s that turn silent runtime corruption into
+link-time errors, the useful one being an SRAM overflow check so
+`.data + .bss + stack` can never quietly exceed 80 KB.
+
+**[`src/startup.S`](src/startup.S)** — the reset entry. Two parts of it
+are genuinely easy to get wrong and expensive to debug:
+
+1. **The boot header.** Chapter 5 / Figure 5-2: the SSCM scans each
+   boot sector for `BOOT_ID = 0x5A` in bits 8:15 of the word at the
+   sector base, then jumps to the 32-bit vector at offset `0x4`.
+   PowerPC numbers bits MSB-first, so that word is **`0x005A0000`**.
+   Get it wrong and the SSCM finds no valid sector across all five,
+   hands over to the BAM, and parks the core in static mode — the chip
+   never runs your code and gives no other symptom. The build verifies
+   the word actually landed rather than assuming it did.
+2. **SRAM ECC initialisation, before the stack exists.** Section 31.5
+   is explicit that because ECC syndrome bits power up random, SRAM
+   "must be initialized by executing 32-bit write operations prior to
+   any read accesses" — including implicit reads caused by sub-32-bit
+   writes. A stack frame is read back on the way out, so the stack
+   cannot be touched until this is done. The init therefore runs out of
+   registers only: no stack, no reads, no calls. It uses `e_stmw` to
+   write all 32 registers (128 bytes, 32-bit aligned, even count, as
+   Section 31.6 requires) per iteration — 640 iterations covering
+   exactly 80 KB, which the disassembly confirms.
+
+`startup.S` also supplies a no-op `__eabi`, which GCC calls at the top
+of `main()` on PowerPC EABI targets; the small-data bases (`r13`/`r2`)
+and `.data`/`.bss` init it would normally arrange are already done
+explicitly in the startup path.
 
 ## Real-time architecture
 

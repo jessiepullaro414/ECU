@@ -194,7 +194,7 @@ int flexcan_transmit(uint32_t base, uint8_t mb, uint32_t id, int extended,
  * frame has arrived (CODE=FULL), performs the real lock-safe read
  * sequence (C/S, then ID, then data, then TIMER to unlock - see file
  * header), re-arms the MB for the next frame, and returns 1 with
- * *id_out/*data_out/*len_out/*extended_out filled in. Returns 0 if
+ * id_out, data_out, len_out and extended_out filled in. Returns 0 if
  * nothing new arrived - call this every main-loop iteration, it does
  * not block. */
 int flexcan_receive_poll(uint32_t base, uint8_t mb, uint32_t *id_out,

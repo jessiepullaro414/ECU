@@ -130,7 +130,8 @@
  *
  * RESOLVED this pass, real, high confidence (Table 22's own column-
  * aligned bit boxes, traced against the real header row - see
- * MC33810_MODE_*/MC33810_LSD_* macros below). These field layouts are
+ * MC33810_MODE_ and MC33810_LSD_ macro families below). These field
+ * layouts are
  * unaffected by the address-space bug above - Table 22 describes each
  * register's own internal bit meaning, independent of which address
  * gets you there:

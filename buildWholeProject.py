@@ -56,7 +56,13 @@ FW_SRC = os.path.join(FW_DIR, "src")
 # work). -mcpu=e200z0 is GCC's real, standard target name for this exact
 # core in a powerpc-eabivle toolchain (e.g. NXP S32 Design Studio's
 # bundled GCC).
-REAL_CFLAGS = ["-mvle", "-mcpu=e200z0", "-c", "-I", FW_INC]
+# -std=gnu99 is not cosmetic: this toolchain is GCC 4.9.4, whose default
+# is gnu90, and gnu90 rejects declarations inside a `for` initialiser -
+# which this codebase uses throughout (`for (unsigned i = 0; ...)`). The
+# code is valid C99; the compiler just had to be told which language it
+# was reading. gnu99 rather than c99 keeps GCC's inline-asm extensions,
+# which intc.c relies on for mtspr/mfspr.
+REAL_CFLAGS = ["-mvle", "-mcpu=e200z0", "-std=gnu99", "-Wall", "-c", "-I", FW_INC]
 
 
 def run_step(name, cmd, cwd):
@@ -131,6 +137,11 @@ def find_real_toolchain():
             r"C:\NXP\*\Cross_Tools\powerpc-eabivle-*\bin\powerpc-eabivle-gcc.exe",
             r"C:\Freescale\*\Cross_Tools\powerpc-eabivle-*\bin\powerpc-eabivle-gcc.exe",
             r"C:\*S32DS*Power*\**\powerpc-eabivle-gcc.exe",
+            # Standalone toolchain drop (no IDE) - S32DS-PA's compiler is
+            # also distributed on its own as a plain powerpc-eabivle-N_N
+            # tree, which is how this project's own machine has it.
+            r"C:\NXP\powerpc-eabivle-*\bin\powerpc-eabivle-gcc.exe",
+            r"C:\powerpc-eabivle-*\bin\powerpc-eabivle-gcc.exe",
     ):
         hits = sorted(glob.glob(pattern, recursive=True))
         if hits:

@@ -201,9 +201,15 @@ uint8_t cj125_read_ident(uint8_t cs_pin);
 uint8_t cj125_read_diag(uint8_t cs_pin);
 
 /* Real, generic byte-value setters for INIT_REG1/2 - build `value` from
- * the CJ125_INIT1_*/CJ125_INIT2_* macros above. The specific real byte
- * values for this board's actual running configuration are NOT
- * determined this session - see file header. */
+ * the CJ125_INIT1_ and CJ125_INIT2_ macro families above. The specific
+ * real byte values for this board's actual running configuration are
+ * NOT determined this session - see file header.
+ *
+ * (The macro families are deliberately NOT written here with a trailing
+ * wildcard-then-slash: that character pair closes a block comment, and
+ * writing it inside this one is exactly the bug the first real compile
+ * of this project caught here - it silently ended the comment and threw
+ * the rest of the file into the parser as code.) */
 void cj125_write_init1(uint8_t cs_pin, uint8_t value);
 void cj125_write_init2(uint8_t cs_pin, uint8_t value);
 

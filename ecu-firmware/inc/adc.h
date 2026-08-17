@@ -186,7 +186,7 @@ uint16_t adc_read_channel(uint32_t base, uint8_t channel);
  * mapping at all - only a Standard-range S[n] one, real and confirmed,
  * not a limitation of this table.
  *
- * Returns 1 and fills *base_out/*channel_out on a real match, 0 (with
+ * Returns 1 and fills base_out / channel_out on a real match, 0 (with
  * both outputs left untouched) for a pin that isn't one of this
  * board's real analog inputs - callers should treat that as a real
  * "not a valid sensor pin" fault, not silently read channel 0. */

@@ -8,6 +8,7 @@
 /manifold-pcb.zip
 /spica-rebuilding-services/
 /thermo-pcb/
+/fascia-pcb/
 /.claude/
 
 # --- ecu-pcb: generated/derived content, not source ---
@@ -25,6 +26,8 @@ ecu-pcb/*.dsn
 ecu-pcb/*.ses
 ecu-pcb/*-backups/
 ecu-pcb/fp-info-cache
+# kicad-cli sch erc writes this next to the schematic on every run.
+ecu-pcb/ECU-erc.rpt
 ecu-pcb/*.kicad_pcb-bak
 ecu-pcb/*.kicad_sch-bak
 

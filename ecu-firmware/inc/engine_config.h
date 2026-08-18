@@ -54,4 +54,37 @@
 #define INJECTOR_DEAD_TIME_US 1000u
 #define IGNITION_DWELL_US     3000u
 
+/* ---- Fuelling ------------------------------------------------------
+ * Speed-density: air mass in the cylinder from pressure, volume and
+ * temperature; fuel mass from the target AFR; pulse width from the
+ * injector's flow rate. VE is the measured correction that makes the
+ * ideal-gas figure match what the engine actually inhales. */
+#define FUEL_DISPLACEMENT_CC   5700u
+#define FUEL_CYL_VOLUME_CC     (5700u / 8u)
+#define FUEL_INJECTOR_CC_MIN   440u
+#define FUEL_DENSITY_MG_CC     745u
+#define FUEL_TARGET_AFR_X10    147u
+
+/* MAP sensor: linear ratiometric, so kPa is a straight line in ADC
+ * counts between these two points. */
+#define MAP_KPA_AT_MIN         10u
+#define MAP_KPA_AT_MAX         105u
+#define MAP_ADC_AT_MAX         3103u
+
+/* ---- VE table ------------------------------------------------------
+ * Rows are MAP breakpoints, columns RPM. Bilinearly interpolated.
+ * A STARTING SHAPE, NOT A TUNED MAP - see config/engine.toml. */
+#define VE_RPM_COUNT   8u
+#define VE_MAP_COUNT   5u
+
+static const uint16_t VE_RPM_AXIS[VE_RPM_COUNT] = { 500u, 1000u, 1500u, 2000u, 3000u, 4000u, 5000u, 6000u };
+static const uint16_t VE_MAP_AXIS[VE_MAP_COUNT] = { 20u, 40u, 60u, 80u, 100u };
+static const uint8_t  VE_TABLE[VE_MAP_COUNT][VE_RPM_COUNT] = {
+    {  30u,  33u,  35u,  36u,  35u,  33u,  30u,  27u },   /*   20 kPa */
+    {  45u,  50u,  54u,  56u,  56u,  54u,  50u,  45u },   /*   40 kPa */
+    {  55u,  62u,  68u,  72u,  74u,  72u,  67u,  60u },   /*   60 kPa */
+    {  62u,  70u,  78u,  83u,  86u,  85u,  80u,  72u },   /*   80 kPa */
+    {  66u,  75u,  84u,  90u,  94u,  93u,  88u,  80u },   /*  100 kPa */
+};
+
 #endif /* ENGINE_CONFIG_H */

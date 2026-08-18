@@ -722,13 +722,18 @@ explicit rather than blurred.
   DSPI/CAN — the *core* clock is real now, this specific peripheral's
   clock still isn't derived from it) and the real crank trigger wheel's
   tooth count/pattern (an engine/sensor hardware choice, not a board
-  one — same scope boundary as firing order and VE
-  tables). `injection_arm_cylinder()` still passes microseconds
-  straight through to `emios_set_pulse_width()` uncoverted as a result.
-- **Which tooth/cylinder is at TDC.** `crank_capture_isr()` tracks a
-  real period but doesn't yet decide when to call
-  `injection_arm_cylinder()` — that needs the real trigger wheel tooth
-  pattern and firing order, neither of which exist yet.
+  one). **Both are closed now**: the eMIOS tick frequency is set by
+  `[timebase]` in `config/engine.toml` and the time base is actually
+  started (`emios_init_timebase()`), and the wheel geometry comes from
+  `[crank]`. `injection_arm_cylinder()` converts properly and adds
+  injector dead time centrally.
+- **Which tooth/cylinder is at TDC** — *closed*. `crank_capture_isr()`
+  finds the wheel gap, counts teeth from it, and walks the configured
+  firing order to arm the cylinder that is due. What is still genuinely
+  unknown is `CRANK_GAP_TO_TDC_DEG`: the angle between the wheel's gap
+  and cylinder 1 compression TDC is a physical property of how the
+  trigger wheel is fitted, and has to be measured on the engine with a
+  timing light. The default in the config is a placeholder.
 - Injected conversions, scan mode, DMA, interrupts, the analog
   watchdog, and CTU-triggered conversion (ADC) — real features with
   their own register groups, not touched by this pass's one-shot
@@ -883,7 +888,7 @@ don't divide 360, more missing teeth than teeth, a cycle that doesn't
 divide by cylinder count); they cannot catch one that is simply wrong
 for your engine.
 
-Two things this unblocked:
+Three things this unblocked:
 
 - **Firing-order scheduling is implemented.** `crank_capture_isr()`
   finds the wheel's gap (a tooth period much longer than the last — with
@@ -910,6 +915,74 @@ Two things this unblocked:
   reported anywhere. `emios_init_timebase()` now sets the prescaler and
   enables it, following the manual's documented ordering, giving the
   1 MHz / 1 µs-per-tick base the injection maths assumes.
+- **Speed-density fuelling is implemented** — `pulse_width_us` was being
+  passed as a literal `0`, so every cylinder was scheduled with no fuel.
+  [`src/fuel.c`](src/fuel.c) now does the real calculation at the moment
+  a cylinder is armed: air mass in the cylinder from the ideal gas law
+  (MAP × swept volume × VE ÷ R × intake temperature), fuel mass from the
+  target AFR, pulse width from the injector's flow rate. All integer —
+  no FPU is assumed anywhere in this firmware — with the intermediate
+  air mass held in micrograms in a `uint64_t`, which is necessary rather
+  than cautious: at 100 kPa on a 712 cc cylinder the numerator passes
+  2×10¹⁰ before the divide, and a wrapped air mass produces a pulse
+  width that looks plausible and is badly wrong.
+
+### The VE table
+
+Volumetric efficiency — the fraction of the cylinder that actually fills
+— is the measured correction that makes the ideal-gas figure match what
+the engine really inhales, and it is the whole reason a tuned map
+exists. It lives in `[ve]` in `config/engine.toml` as an RPM × MAP grid
+and is bilinearly interpolated. The generator checks both axes are
+strictly ascending (the lookup walks them assuming that; a mis-ordered
+axis would silently interpolate between the wrong cells), that the table
+dimensions match the axes, and that no cell is outside 10–150 % — a VE
+outside that is far more likely a typo than an engine, and catching it
+here beats discovering it as a lean cylinder at load.
+
+**The shipped table is a starting shape, not a tuned map.** It follows
+the general behaviour of a naturally-aspirated engine — poor at low RPM
+and light load, best in the midrange, falling off at high RPM — and
+describes no particular engine. Running a wrong VE table lean under load
+is how pistons get damaged.
+
+Verified on the host against independently-computed floating-point
+physics: all 40 table cells round-trip exactly, midpoints interpolate as
+expected, off-axis queries clamp to the corner values rather than
+extrapolating, and at 3000 rpm / 100 kPa / 40 °C the integer path gives
+9272 µs against 9277 µs from the floating-point reference — a 0.05 %
+difference, entirely integer truncation.
+
+**A real bug this work caught**, in the firing-order scheduling
+committed just before it: `event.cylinder` was being set to
+`firing_order[i] - 1u`, but `cylinder_event_t.cylinder` is documented
+1-based and `injector_ch[]`/`ignition_ch[]` are sized to match with a
+deliberately-unused slot 0. So cylinder 1 indexed that sentinel — whose
+base address is `0` — and cylinder 8 was never driven at all. That is
+not "fires the wrong cylinder"; it is an eMIOS register offset written
+into the flash boot sector. Found by simulating the ISR on the host and
+noticing `ch0` in the armed-channel sequence. Fixed, and
+`injection_arm_cylinder()` now rejects an out-of-range cylinder rather
+than indexing the sentinel, so the same mistake can't reach a register
+write again.
+
+Two supporting pieces came with it. `injection_crank_rpm()` derives
+engine speed from the tooth period, normalising the gap tooth's longer
+period back to a single interval so RPM is valid at *every* tooth
+including the one where wheel sync is established (host-checked: 2997
+against a 3000 rpm stimulus, the residual being 1 µs tick
+quantisation). And `injection_set_fuel_inputs()` publishes MAP and IAT
+from the main loop, because the ISR must not do a blocking ADC
+conversion itself — its whole budget at 6000 rpm on a 36-tooth wheel is
+278 µs.
+
+What is deliberately **not** implemented, because each needs a running
+engine to calibrate and inventing a curve now would be guessing dressed
+as configuration: warm-up enrichment from CLT, acceleration enrichment
+from TPS rate of change, closed-loop trim from the wideband O2
+controllers, and battery-voltage correction of injector dead time (the
+board has the VBATT channel precisely for that; the single dead-time
+figure in the config is a placeholder for the table).
 
 ## Boot and startup
 
@@ -1016,18 +1089,22 @@ logic this skeleton's `update_tables()` stub leaves open.
   toolchain available to check either against). The CJ125 (wideband O2) driver is
   real now too, a whole new peripheral this session, closing the
   MC33810-pass TODO — see above.
-- `injection_arm_cylinder()` still passes microseconds straight through
-  to `emios_set_pulse_width()` unconverted, and `crank_capture_isr()`
-  doesn't yet decide when to actually arm a cylinder - both need real
-  numbers (eMIOS tick frequency, crank trigger wheel geometry, firing
-  order) that don't exist yet (see above).
+- `injection_arm_cylinder()` converts microseconds to eMIOS ticks for
+  real and adds injector dead time centrally; `crank_capture_isr()`
+  decodes the missing-tooth wheel and arms the cylinder due next, with
+  a real speed-density pulse width from `fuel.c`. All three previously
+  needed numbers (eMIOS tick frequency, wheel geometry, firing order)
+  now come from `config/engine.toml` (see above).
 - `broadcast_can()` is now called from the real main loop (see above) -
   `flexcan_transmit()`'s real timeout made that safe.
 - MC33810 SPI transfer (`mc33810_transfer()`) is implemented with a
   real, conservative baud rate and real tLEAD/tLAG/tSTR timing margins
   (see above) - both previously-open gaps now closed.
-- No firing-order, VE, dwell, or timing table exists — engine-specific,
-  not board-specific.
+- Firing order and the VE table are real and configurable
+  (`config/engine.toml`, see above), with the values shipped as
+  documented **defaults, not measurements**. No ignition-timing table
+  and no dwell *table* exist yet (dwell is a single configured figure);
+  both are engine-specific and want a running engine to tune against.
 - **The real CJ125 INIT_REG1/2 byte values for this board's actual
   running configuration** — `cj125_write_init1()`/`cj125_write_init2()`
   are real, generic byte setters, but which gain range (`VL`) matches

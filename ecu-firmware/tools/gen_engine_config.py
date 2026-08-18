@@ -113,6 +113,54 @@ def validate(cfg):
     if not (0 <= gap < 360):
         raise ConfigError(f"crank.gap_to_tdc_deg = {gap}, must be 0..359")
 
+    fuel = cfg["fuel"]
+    if fuel["displacement_cc"] < 1:
+        raise ConfigError("fuel.displacement_cc must be positive")
+    if fuel["injector_cc_per_min"] < 1:
+        raise ConfigError("fuel.injector_cc_per_min must be positive")
+    if not (50 <= fuel["target_afr_x10"] <= 250):
+        raise ConfigError(
+            f"fuel.target_afr_x10 = {fuel['target_afr_x10']}, expected 50..250 "
+            f"(x10, so 147 = 14.7:1). Gasoline stoich is 147, E85 about 98")
+
+    m = cfg["map_sensor"]
+    if m["kpa_at_max"] <= m["kpa_at_min"]:
+        raise ConfigError("map_sensor.kpa_at_max must exceed kpa_at_min")
+    if not (1 <= m["adc_counts_at_max"] <= 4095):
+        raise ConfigError(
+            f"map_sensor.adc_counts_at_max = {m['adc_counts_at_max']}, must be "
+            f"1..4095 - the MCU ADC is 12-bit")
+
+    ve = cfg["ve"]
+    rpm, mapa, table = ve["rpm_axis"], ve["map_axis"], ve["table"]
+
+    # Axes must ascend: the lookup walks them assuming that, and a
+    # mis-ordered axis would silently interpolate between the wrong cells.
+    for name, axis in (("rpm_axis", rpm), ("map_axis", mapa)):
+        if len(axis) < 2:
+            raise ConfigError(f"ve.{name} needs at least 2 breakpoints")
+        if any(b <= a for a, b in zip(axis, axis[1:])):
+            raise ConfigError(
+                f"ve.{name} must be strictly ascending, got {axis}")
+
+    if len(table) != len(mapa):
+        raise ConfigError(
+            f"ve.table has {len(table)} rows but ve.map_axis has "
+            f"{len(mapa)} breakpoints - one row per MAP breakpoint")
+    for i, row in enumerate(table):
+        if len(row) != len(rpm):
+            raise ConfigError(
+                f"ve.table row {i} (MAP {mapa[i]} kPa) has {len(row)} entries "
+                f"but ve.rpm_axis has {len(rpm)} breakpoints")
+        for j, v in enumerate(row):
+            # A VE outside this range is far more likely a typo than a
+            # real engine. Catching it here beats discovering it as a
+            # lean cylinder at load.
+            if not (10 <= v <= 150):
+                raise ConfigError(
+                    f"ve.table[{i}][{j}] = {v}% at {mapa[i]} kPa / {rpm[j]} rpm "
+                    f"is outside 10..150% - almost certainly a typo")
+
     pre = tb["emios_prescaler"]
     if not (1 <= pre <= 256):
         raise ConfigError(
@@ -176,6 +224,34 @@ TEMPLATE = '''/*
 #define INJECTOR_DEAD_TIME_US {dead_time}u
 #define IGNITION_DWELL_US     {dwell}u
 
+/* ---- Fuelling ------------------------------------------------------
+ * Speed-density: air mass in the cylinder from pressure, volume and
+ * temperature; fuel mass from the target AFR; pulse width from the
+ * injector's flow rate. VE is the measured correction that makes the
+ * ideal-gas figure match what the engine actually inhales. */
+#define FUEL_DISPLACEMENT_CC   {displacement}u
+#define FUEL_CYL_VOLUME_CC     ({displacement}u / {cylinders}u)
+#define FUEL_INJECTOR_CC_MIN   {inj_flow}u
+#define FUEL_DENSITY_MG_CC     {fuel_density}u
+#define FUEL_TARGET_AFR_X10    {afr}u
+
+/* MAP sensor: linear ratiometric, so kPa is a straight line in ADC
+ * counts between these two points. */
+#define MAP_KPA_AT_MIN         {map_min}u
+#define MAP_KPA_AT_MAX         {map_max}u
+#define MAP_ADC_AT_MAX         {map_counts}u
+
+/* ---- VE table ------------------------------------------------------
+ * Rows are MAP breakpoints, columns RPM. Bilinearly interpolated.
+ * A STARTING SHAPE, NOT A TUNED MAP - see config/engine.toml. */
+#define VE_RPM_COUNT   {rpm_count}u
+#define VE_MAP_COUNT   {map_count}u
+
+static const uint16_t VE_RPM_AXIS[VE_RPM_COUNT] = {{ {rpm_axis} }};
+static const uint16_t VE_MAP_AXIS[VE_MAP_COUNT] = {{ {map_axis} }};
+static const uint8_t  VE_TABLE[VE_MAP_COUNT][VE_RPM_COUNT] = {{
+{ve_rows}}};
+
 #endif /* ENGINE_CONFIG_H */
 '''
 
@@ -202,6 +278,21 @@ def main():
         gap=crank["gap_to_tdc_deg"],
         dead_time=cfg["injection"]["dead_time_us"],
         dwell=cfg["ignition"]["dwell_us"],
+        displacement=cfg["fuel"]["displacement_cc"],
+        inj_flow=cfg["fuel"]["injector_cc_per_min"],
+        fuel_density=cfg["fuel"]["fuel_density_mg_per_cc"],
+        afr=cfg["fuel"]["target_afr_x10"],
+        map_min=cfg["map_sensor"]["kpa_at_min"],
+        map_max=cfg["map_sensor"]["kpa_at_max"],
+        map_counts=cfg["map_sensor"]["adc_counts_at_max"],
+        rpm_count=len(cfg["ve"]["rpm_axis"]),
+        map_count=len(cfg["ve"]["map_axis"]),
+        rpm_axis=", ".join(f"{v}u" for v in cfg["ve"]["rpm_axis"]),
+        map_axis=", ".join(f"{v}u" for v in cfg["ve"]["map_axis"]),
+        ve_rows="".join(
+            "    { " + ", ".join(f"{v:3d}u" for v in row) + " },"
+            + f"   /* {cfg['ve']['map_axis'][i]:>4d} kPa */\n"
+            for i, row in enumerate(cfg["ve"]["table"])),
     )
     with open(OUT, "w", encoding="utf-8") as f:
         f.write(text)
@@ -213,6 +304,13 @@ def main():
           f"{eng['cycle_degrees'] // eng['cylinders']} deg between firings")
     print(f"  timebase {tick_hz} Hz "
           f"({1000000 // tick_hz if tick_hz <= 1000000 else 0} us/tick)")
+    ve = cfg["ve"]
+    flat = [v for row in ve["table"] for v in row]
+    print(f"  VE table {len(ve['map_axis'])} MAP x {len(ve['rpm_axis'])} RPM, "
+          f"{min(flat)}-{max(flat)}%")
+    print(f"  {cfg['fuel']['displacement_cc']} cc, "
+          f"{cfg['fuel']['injector_cc_per_min']} cc/min injectors, "
+          f"target AFR {cfg['fuel']['target_afr_x10'] / 10:.1f}")
     print("Config valid. Wrote " + OUT)
 
 

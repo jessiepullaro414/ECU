@@ -116,6 +116,19 @@ void cam2_capture_isr(uint32_t capture_time);
  * ENGINE_STATE_CRANK_SYNC, and no injector/ignition channel should be
  * armed, while this is still 0. */
 uint32_t injection_crank_period_ticks(void);
+
+/* injection_crank_rpm(): engine speed in RPM, derived from the crank
+ * tooth period. Valid at every tooth including the gap tooth (the gap's
+ * longer period is normalised back to a single interval). Returns 0
+ * before the first period has been measured. */
+uint16_t injection_crank_rpm(void);
+
+/* injection_set_fuel_inputs(): publishes the fuelling inputs the crank
+ * ISR needs. Called from the main loop after each sensor read, because
+ * the ISR must not do a blocking ADC conversion itself - it runs
+ * between two teeth, which at 6000 rpm on a 36-tooth wheel is 278 us.
+ * iat_centiC is hundredths of a degree C, matching iat_sensor.h. */
+void injection_set_fuel_inputs(uint16_t map_kpa, int32_t iat_centiC);
 int injection_crank_synced(void);
 
 /* Real INTC vector handlers for this board's two real, shared eMIOS_0

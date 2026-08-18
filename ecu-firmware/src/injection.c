@@ -25,6 +25,7 @@
 #include "engine_config.h"
 #include "ecu_pins.h"
 #include "emios.h"
+#include "fuel.h"
 
 typedef struct {
     uint32_t base;
@@ -90,6 +91,22 @@ static uint32_t angle_to_ticks(uint32_t period_ticks, uint32_t degrees_per_perio
 static uint32_t last_crank_capture;
 static uint32_t crank_period_ticks_val;
 static uint32_t prev_crank_period_ticks;
+
+/* One tooth interval with the missing-tooth gap normalised out, so RPM
+ * can be derived at EVERY tooth including the gap one. Without this the
+ * gap tooth - whose measured period legitimately spans (missing+1)
+ * intervals - would read as a sudden drop to a fraction of true RPM,
+ * and that tooth is exactly where wheel sync is established. */
+static uint32_t normal_period_ticks;
+
+/* Fuelling inputs, published by the main loop (injection_set_fuel_inputs)
+ * and consumed here at interrupt level. Written as whole words by one
+ * writer and read by one reader, so no lock is needed on this core; the
+ * defaults are deliberately the safe end - no MAP reading yet means
+ * near-vacuum, which asks for the smallest pulse the table describes
+ * rather than the largest. */
+static volatile uint16_t fuel_map_kpa = MAP_KPA_AT_MIN;
+static volatile int32_t  fuel_iat_centiC = 2000;   /* 20 C until told otherwise */
 static int crank_capture_valid = 0;
 static int cam_synced = 0;
 
@@ -135,6 +152,16 @@ static const uint8_t firing_order[ENGINE_CYLINDERS] = ENGINE_FIRING_ORDER;
  * load point. Ignition dwell is NOT adjusted the same way: dwell is
  * already the real coil charge time, with no equivalent offset. */
 void injection_arm_cylinder(const cylinder_event_t *event) {
+    /* Cylinders are 1-based (injection.h), and injector_ch/ignition_ch
+     * are sized and indexed to match with a deliberately-unused slot 0.
+     * Reject anything outside that rather than index the sentinel: its
+     * base address is 0, so an off-by-one here would not fire the wrong
+     * cylinder, it would write an eMIOS register offset into the flash
+     * boot sector. Caught exactly that way once already. */
+    if (event->cylinder < 1u || event->cylinder > ENGINE_CYLINDERS) {
+        return;
+    }
+
     const emios_channel_t *inj = &injector_ch[event->cylinder];
     const emios_channel_t *ign = &ignition_ch[event->cylinder];
 
@@ -209,12 +236,15 @@ void crank_capture_isr(uint32_t capture_time) {
     if (gap_detected(crank_period_ticks_val, prev_crank_period_ticks)) {
         /* This edge is the first real tooth after the gap - the one
          * angularly-known point on the wheel. */
+        normal_period_ticks = crank_period_ticks_val
+                              / (CRANK_WHEEL_MISSING + 1u);
         tooth_index = 0u;
         wheel_synced = 1u;
         if (ENGINE_CYCLE_DEGREES == 720u) {
             revolution = (uint8_t)(revolution ^ 1u);
         }
     } else if (wheel_synced) {
+        normal_period_ticks = crank_period_ticks_val;
         tooth_index = (uint8_t)(tooth_index + 1u);
         if (tooth_index >= CRANK_REAL_TEETH) {
             /* Should have seen the gap by now. Position is no longer
@@ -254,8 +284,18 @@ void crank_capture_isr(uint32_t capture_time) {
                            % ENGINE_CYCLE_DEGREES;
         if (delta < CRANK_DEGREES_PER_TOOTH) {
             cylinder_event_t event;
-            event.cylinder       = (uint8_t)(firing_order[i] - 1u);
-            event.pulse_width_us = 0u;   /* set by the fuelling calculation */
+            event.cylinder       = firing_order[i];   /* 1-based, see injection.h */
+            /* cylinder_event_t.pulse_width_us is 16-bit, so clamp
+             * before the assignment rather than after: truncating here
+             * would wrap a too-long pulse down to a short one, and
+             * injection_arm_cylinder()'s own tick-level clamp would
+             * never see the real value. 65.5 ms is past any real
+             * injector command - reaching it means a misconfigured
+             * injector flow rate, not a running engine. */
+            uint32_t pw = fuel_pulse_width_us(injection_crank_rpm(),
+                                              fuel_map_kpa,
+                                              fuel_iat_centiC);
+            event.pulse_width_us = (pw > 65535u) ? 65535u : (uint16_t)pw;
             event.dwell_us       = IGNITION_DWELL_US;
             event.fire_angle_deg = (uint16_t)fire_at;
             injection_arm_cylinder(&event);
@@ -283,6 +323,28 @@ void cam2_capture_isr(uint32_t capture_time) {
      * provides that); real use is VVT position feedback, not
      * implemented this session. */
     (void)capture_time;
+}
+
+void injection_set_fuel_inputs(uint16_t map_kpa, int32_t iat_centiC) {
+    fuel_map_kpa    = map_kpa;
+    fuel_iat_centiC = iat_centiC;
+}
+
+uint16_t injection_crank_rpm(void) {
+    /* One revolution is CRANK_WHEEL_TEETH tooth intervals (the missing
+     * teeth still occupy their angular slots - that is what makes the
+     * gap detectable), so:
+     *
+     *   rpm = 60 * tick_hz / (ticks_per_tooth * teeth)
+     *
+     * Guarded against the pre-sync zero rather than trusting a caller
+     * to check injection_crank_synced() first. */
+    if (normal_period_ticks == 0u) {
+        return 0u;
+    }
+    uint32_t rev_ticks = normal_period_ticks * CRANK_WHEEL_TEETH;
+    uint32_t rpm = (60u * ECU_EMIOS_TICK_HZ) / rev_ticks;
+    return (rpm > 65535u) ? 65535u : (uint16_t)rpm;
 }
 
 uint32_t injection_crank_period_ticks(void) {

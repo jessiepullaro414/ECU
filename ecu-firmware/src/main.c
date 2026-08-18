@@ -41,6 +41,7 @@
 #include "clt_sensor.h"
 #include "ads1118.h"
 #include "iat_sensor.h"
+#include "fuel.h"
 #include "engine_config.h"
 
 typedef enum {
@@ -417,16 +418,36 @@ static void broadcast_can(void) {
 }
 
 static void update_tables(void) {
-    /* VE table lookup (RPM x MAP or RPM x TPS, depending on speed-
-     * density vs alpha-N - a real design decision for later, not
-     * assumed here), dwell table, ignition timing table, closed-loop
-     * O2 trim, boost target vs. wastegate duty, ETC throttle-plate
-     * target vs. pedal position (with the redundant APP1/APP2 and
-     * TPS1/TPS2 plausibility check this board's hardware exists for -
-     * see ecu-pcb/README.md's "Electronic throttle control" section).
-     * Results here are read by the NEXT crank-edge ISR, not applied
-     * immediately - real engine control is always one step ahead of
-     * the current crank position, never reactive to it. */
+    /* Speed-density fuelling is real now: convert this loop's filtered
+     * MAP and IAT readings into engineering units and publish them for
+     * the crank ISR, which does the VE lookup and pulse-width
+     * calculation itself at the moment it arms a cylinder (fuel.c).
+     *
+     * The conversion happens HERE rather than in the ISR because it is
+     * per-loop work, not per-tooth work - the sensors do not change
+     * meaningfully between two teeth, and the ISR's whole budget at
+     * 6000 rpm is 278 us.
+     *
+     * The speed-density-vs-alpha-N question this comment used to leave
+     * open is decided: this board reads manifold pressure, so MAP is
+     * the load axis. TPS stays a real input for acceleration
+     * enrichment, which is not implemented (fuel.h says why).
+     *
+     * iat_temp_tenthF() works in tenths of a degree F; fuel.c wants
+     * hundredths of a degree C. C = (F-32)*5/9, so
+     * centiC = (tenthF - 320) * 50 / 9. */
+    int32_t iat_centiC = (((int32_t)iat_temp_tenthF(sensors.iat) - 320) * 50) / 9;
+    injection_set_fuel_inputs(fuel_map_kpa_from_adc(sensors.map), iat_centiC);
+
+    /* Still real and still not done, unchanged by the above: dwell
+     * table, ignition timing table, closed-loop O2 trim, boost target
+     * vs. wastegate duty, ETC throttle-plate target vs. pedal position
+     * (with the redundant APP1/APP2 and TPS1/TPS2 plausibility check
+     * this board's hardware exists for - see ecu-pcb/README.md's
+     * "Electronic throttle control" section). Results here are read by
+     * the NEXT crank-edge ISR, not applied immediately - real engine
+     * control is always one step ahead of the current crank position,
+     * never reactive to it. */
 }
 
 int main(void) {

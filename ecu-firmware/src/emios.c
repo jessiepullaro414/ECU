@@ -62,3 +62,13 @@ uint32_t emios_read_capture(uint32_t base, uint8_t channel) {
 int emios_flag_is_set(uint32_t base, uint8_t channel) {
     return (EMIOS_S(base, channel) & EMIOSS_FLAG) != 0u;
 }
+
+void emios_init_timebase(uint32_t base, uint32_t divide_ratio) {
+    /* Documented order (Section 27.6.1): disable the prescaler, set the
+     * ratio, then re-enable. Writing GPRE while GPREN is still set would
+     * change the divider under a running counter. */
+    EMIOS_MCR(base) &= ~EMIOS_MCR_GPREN;
+    uint32_t mcr = EMIOS_MCR(base) & ~EMIOS_MCR_GPRE_MASK;
+    EMIOS_MCR(base) = mcr | EMIOS_MCR_GPRE(divide_ratio);
+    EMIOS_MCR(base) |= EMIOS_MCR_GPREN;
+}

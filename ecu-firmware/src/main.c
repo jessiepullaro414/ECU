@@ -41,6 +41,7 @@
 #include "clt_sensor.h"
 #include "ads1118.h"
 #include "iat_sensor.h"
+#include "engine_config.h"
 
 typedef enum {
     ENGINE_STATE_CRANK_SYNC,   /* waiting for a cam edge to disambiguate 360 vs 720 */
@@ -223,6 +224,14 @@ static uint16_t iir_update(uint16_t filtered, uint16_t raw) {
  * (EMIOS_CRANK_MOD/CAM1_MOD/CAM2_MOD are all EMIOS_MOD_0 in ecu_pins.h),
  * so this only ever touches EMIOS0_BASE. */
 static void emios_capture_init(void) {
+    /* The shared time base has to be running before any capture means
+     * anything. Without GPREN the eMIOS counter gets no clock at all
+     * (see emios.h) - captures would all read the same value, with
+     * nothing anywhere reporting an error. This driver never touched
+     * MCR until now, so that was the state. ECU_EMIOS_PRESCALER gives
+     * the 1 MHz / 1 us-per-tick base the injection maths assumes. */
+    emios_init_timebase(EMIOS0_BASE, ECU_EMIOS_PRESCALER);
+
     emios_init_capture_channel(EMIOS0_BASE, EMIOS_CRANK_CH, 1);
     emios_init_capture_channel(EMIOS0_BASE, EMIOS_CAM1_CH, 1);
     emios_init_capture_channel(EMIOS0_BASE, EMIOS_CAM2_CH, 1);

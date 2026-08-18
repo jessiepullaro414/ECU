@@ -25,6 +25,24 @@
 #define EMIOS_OUDIS(base)  (*(volatile uint32_t *)((base) + 0x008u))
 #define EMIOS_UCDIS(base)  (*(volatile uint32_t *)((base) + 0x00Cu))
 
+/* EMIOSMCR fields. Same datasheet-bit -> standard-bit convention as the
+ * channel registers below (standard = 31 - datasheet bit).
+ *
+ * GPREN IS NOT OPTIONAL. Its own field description is blunt about what
+ * happens without it: "0 = Prescaler disabled (no clock) and prescaler
+ * counter is cleared". Leave it clear and the eMIOS time base never
+ * advances at all - every capture would read the same value and every
+ * output channel would sit still, with no error anywhere to explain it.
+ * This driver used to never touch MCR, so the time base was running on
+ * nothing. */
+#define EMIOS_MCR_GPREN       (1u << 26)  /* datasheet bit 5 */
+#define EMIOS_MCR_GPRE_SHIFT  8           /* datasheet bits 16:23 */
+#define EMIOS_MCR_GPRE_MASK   (0xFFu << EMIOS_MCR_GPRE_SHIFT)
+
+/* Table 27-12: the divide ratio is GPRE + 1 (00000000 -> 1 ... 11111111
+ * -> 256), so this macro takes the ratio the caller actually wants. */
+#define EMIOS_MCR_GPRE(ratio) ((uint32_t)(((ratio) - 1u) & 0xFFu) << EMIOS_MCR_GPRE_SHIFT)
+
 /* Per-channel base: UC[n] = module_base + 0x020 + n*0x020 - confirmed
  * from Table 27-10 (Channel[0] occupies 0x020-0x03F, Channel[1] occupies
  * 0x040-0x05F, etc). Valid n = 0..31 per eMIOS module. */
@@ -116,6 +134,17 @@ void emios_init_opwfmb_channel(uint32_t base, uint8_t channel,
  * this is the real per-cylinder-event call (injection.c's
  * injection_arm_cylinder), not the one-time init above. */
 void emios_set_pulse_width(uint32_t base, uint8_t channel, uint32_t pulse_ticks);
+
+/* Brings up the module's shared time base: sets the global prescaler to
+ * `divide_ratio` and enables it. Must be called before any capture or
+ * output channel is useful, because without GPREN the counter has no
+ * clock at all.
+ *
+ * Follows the sequence the reference manual gives for changing the
+ * prescaler (Section 27.6.1): clear GPREN, write GPRE, then set GPREN -
+ * rather than writing the whole register in one go, so the divider is
+ * never changed underneath a running counter. */
+void emios_init_timebase(uint32_t base, uint32_t divide_ratio);
 
 /* Configure a channel for crank/cam edge capture (SAIC mode).
  * rising_edge: real, confirmed sense (Table 27-17's own field

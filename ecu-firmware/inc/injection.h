@@ -48,17 +48,29 @@ typedef struct {
  * actual fire angle (how far ahead depends on RPM and the eMIOS's own
  * arm-to-fire latency - needs real bench measurement, not guessed).
  *
- * Real now: which eMIOS unit/channel per cylinder (injection.c's own
- * lookup tables) and the OPWFMB register sequence itself
- * (emios_set_pulse_width(), see emios.h). Still a TODO: pulse_width_us/
- * dwell_us are passed straight through as if they were already eMIOS
- * ticks - the real microseconds-to-ticks conversion (us_to_ticks() in
- * injection.c) exists but needs the real eMIOS tick frequency, which
- * isn't known yet (see injection.c's file header). fire_angle_deg isn't
- * used by this function at all yet - the angle-to-time conversion
- * (angle_to_ticks() in injection.c) also exists but needs the real
- * crank trigger wheel geometry, likewise not known yet. */
+ * Real now, including the units: pulse_width_us and dwell_us are
+ * genuinely converted to eMIOS ticks against ECU_EMIOS_TICK_HZ, and
+ * injector dead time is added on the way through. Both used to be
+ * passed straight into the hardware as though microseconds were ticks.
+ *
+ * What made that possible was making the engine configurable rather
+ * than waiting to know it: the tick rate is derived from this board's
+ * confirmed 60 MHz peripheral clock and the prescaler the eMIOS driver
+ * now actually programs, and the crank wheel geometry comes from
+ * engine_config.h. See that file - its ENGINE section holds DEFAULTS
+ * describing a common setup, not measurements of any real engine.
+ *
+ * fire_angle_deg is still not consumed here. Turning an angle into a
+ * delay is done (injection_angle_to_ticks() below); what remains is the
+ * scheduling decision of WHICH cylinder is due at a given crank edge,
+ * which needs the firing-order walk in crank_capture_isr(). */
 void injection_arm_cylinder(const cylinder_event_t *event);
+
+/* Real: crank ticks from the trigger wheel's reference gap to a given
+ * crank angle, scaled by the most recently measured tooth period. Turns
+ * a desired firing angle into the hardware delay that realises it.
+ * Angular geometry comes from engine_config.h. */
+uint32_t injection_angle_to_ticks(uint16_t angle_from_ref_deg);
 
 /* Real-time crank/cam ISR handlers (E0UC0 = crank, E0UC1 = cam1,
  * E0UC18 = cam2, all input-capture mode). These are genuinely latency-

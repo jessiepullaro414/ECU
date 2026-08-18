@@ -840,6 +840,51 @@ worth pulling if any of the remaining named gaps above (real clock
 divider values, bit-timing/baud-rate figures, CJ125 support) need a
 second real source to check against.
 
+## Engine configuration
+
+Engine-specific facts live in one place,
+[`inc/engine_config.h`](inc/engine_config.h): cylinder count, crank
+trigger wheel pattern, firing order, injector dead time, ignition dwell.
+These were previously scattered as "TODO, needs a real number" comments
+that blocked the firing path, which was the wrong shape for them — they
+are not facts to discover from a datasheet, they are things the person
+fitting the ECU knows about their engine.
+
+Every setting is `#ifndef`-guarded, so one source tree can build for
+different engines without editing the file:
+
+```bash
+-DENGINE_CYLINDERS=4u -DCRANK_WHEEL_TEETH=60u -DCRANK_WHEEL_MISSING=2u
+```
+
+**The ENGINE values are DEFAULTS, not measurements.** They describe a
+common setup (36-1 wheel, 8 cylinders, the usual small-block firing
+order) and have not been confirmed against any real engine, because
+there isn't one yet. Getting the wheel pattern or firing order wrong
+fires cylinders at the wrong time, which is how engines get damaged —
+so treat that section as something to fill in deliberately. The
+compile-time checks catch a config that contradicts *itself* (teeth that
+don't divide 360, more missing teeth than teeth, a cycle that doesn't
+divide by cylinder count); they cannot catch one that is simply wrong
+for your engine.
+
+Two things this unblocked:
+
+- **The microsecond → tick conversion is now real.** `us_to_ticks()` and
+  `angle_to_ticks()` existed but were never called; injector pulse
+  widths were passed into the hardware as though microseconds were
+  ticks. Both are wired in now, with injector dead time added centrally
+  rather than left to each caller to remember, and a clamp so a pulse
+  longer than the 16-bit channel can express is truncated visibly
+  instead of silently wrapping to something much shorter.
+- **A real bug: the eMIOS time base was never started.** Nothing ever
+  wrote `EMIOSMCR`, and `GPREN`'s own field description is blunt —
+  *"0 = Prescaler disabled (no clock)"*. The counter had no clock at
+  all, so every capture would have read the same value with no error
+  reported anywhere. `emios_init_timebase()` now sets the prescaler and
+  enables it, following the manual's documented ordering, giving the
+  1 MHz / 1 µs-per-tick base the injection maths assumes.
+
 ## Boot and startup
 
 Two files carry everything between reset and `main()`, and both are

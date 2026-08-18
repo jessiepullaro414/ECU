@@ -22,6 +22,7 @@
  * wired into injection_arm_cylinder() with a fabricated placeholder.
  */
 #include "injection.h"
+#include "engine_config.h"
 #include "ecu_pins.h"
 #include "emios.h"
 
@@ -65,8 +66,11 @@ static uint32_t ticks_between(uint32_t earlier, uint32_t later) {
     return (later - earlier) & 0xFFFFu;
 }
 
-/* Real, generic unit-conversion formulas - both correct and complete,
- * neither called with a real number yet (see this file's header). */
+/* Real, generic unit-conversion formulas. Both are now called with real
+ * numbers: the tick rate comes from ECU_EMIOS_TICK_HZ (derived from this
+ * board's confirmed 60 MHz peripheral clock and the prescaler the eMIOS
+ * driver actually programs), and the angular geometry from the crank
+ * wheel settings in engine_config.h. */
 static uint32_t us_to_ticks(uint32_t us, uint32_t emios_tick_hz) {
     return (uint32_t)(((uint64_t)us * emios_tick_hz) / 1000000u);
 }
@@ -88,25 +92,49 @@ static uint32_t crank_period_ticks_val;
 static int crank_capture_valid = 0;
 static int cam_synced = 0;
 
-/* Real, but only half the job: this correctly re-arms the eMIOS
- * channel's pulse width for the NEXT event (emios_set_pulse_width is
- * real, verified, buffered - see emios.h). What's still a TODO is
- * everything upstream of that call: us_to_ticks()/angle_to_ticks()
- * above are real and ready, but calling them for real needs the eMIOS
- * tick frequency and the crank trigger wheel's angular geometry -
- * neither exists yet (see this file's header). Until then this
- * function can genuinely reprogram a channel's pulse width, but the
- * value it's given is still microseconds passed straight through, not
- * a correct tick count. */
+/* Real, and now complete on the unit side: the caller supplies
+ * microseconds, this converts to the eMIOS ticks the hardware actually
+ * counts. That conversion used to be the standing TODO here - the value
+ * was passed straight through as though microseconds were ticks, which
+ * at a 1 MHz timebase would have been off by whatever the real tick
+ * period turned out to be.
+ *
+ * Injector dead time is added here rather than left to the caller. It
+ * is a property of the injector, not of the fuelling calculation, and
+ * every path that computes a pulse width would otherwise have to
+ * remember to add it - forgetting it makes the engine run lean at every
+ * load point. Ignition dwell is NOT adjusted the same way: dwell is
+ * already the real coil charge time, with no equivalent offset. */
 void injection_arm_cylinder(const cylinder_event_t *event) {
     const emios_channel_t *inj = &injector_ch[event->cylinder];
     const emios_channel_t *ign = &ignition_ch[event->cylinder];
 
-    /* TODO: pulse_width_us / dwell_us are microseconds; emios_set_pulse_width
-     * wants eMIOS ticks. Needs the real tick period from the clock/
-     * prescaler setup - do not multiply/divide by a guessed constant. */
-    emios_set_pulse_width(inj->base, inj->channel, event->pulse_width_us);
-    emios_set_pulse_width(ign->base, ign->channel, event->dwell_us);
+    uint32_t inj_ticks = us_to_ticks(event->pulse_width_us + INJECTOR_DEAD_TIME_US,
+                                     ECU_EMIOS_TICK_HZ);
+    uint32_t ign_ticks = us_to_ticks(event->dwell_us, ECU_EMIOS_TICK_HZ);
+
+    /* The eMIOS channel registers are 16-bit (emios.h), so a pulse
+     * longer than the counter can express would silently wrap and fire
+     * a far shorter pulse than asked for. Clamp instead: a clamped
+     * injector pulse is wrong, but a wrapped one is wrong AND looks
+     * fine. At the 1 MHz timebase this ceiling is 65.5 ms, far beyond
+     * any real injector pulse or dwell. */
+    if (inj_ticks > 0xFFFFu) { inj_ticks = 0xFFFFu; }
+    if (ign_ticks > 0xFFFFu) { ign_ticks = 0xFFFFu; }
+
+    emios_set_pulse_width(inj->base, inj->channel, inj_ticks);
+    emios_set_pulse_width(ign->base, ign->channel, ign_ticks);
+}
+
+/* Real: crank ticks from the wheel's reference gap to a given crank
+ * angle, using the most recent measured tooth-to-tooth period. This is
+ * what turns "fire cylinder 3 at 25 degrees BTDC" into a hardware
+ * delay. Exposed for the scheduling work that still has to decide WHICH
+ * cylinder is due - see crank_capture_isr() below. */
+uint32_t injection_angle_to_ticks(uint16_t angle_from_ref_deg) {
+    return angle_to_ticks(crank_period_ticks_val,
+                          CRANK_DEGREES_PER_TOOTH,
+                          angle_from_ref_deg);
 }
 
 void crank_capture_isr(uint32_t capture_time) {

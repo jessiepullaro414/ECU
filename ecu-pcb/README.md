@@ -12,13 +12,13 @@ directly rather than reinventing it, but is a separate, much larger board:
 new directory, new schematic, not built on top of Manifold's layout.
 
 **Status: schematic complete, board placed + fully routed + DRC-clean,
-BOM done.** Steps 2-10 are all done. The board is **165.8 × 130.2 mm,
-8 layers, 234 footprints, 242 nets**, fully routed (0 unrouted) with GND
-planes poured on In1/In3/In6.Cu and +3V3 on In4.Cu. Real
-`kicad-cli pcb drc` reports **0 errors and 0 unconnected items** — the
-only remaining findings are the same benign `lib_footprint_mismatch`
-warnings this project (and Manifold before it) has always carried, now
-18 of them.
+BOM done.** Steps 2-10 are all done. The board is **165.8 × 130.1 mm,
+8 layers, 243 footprints, 243 nets**, fully routed (0 unrouted) with GND
+planes poured on In1/In3/In6.Cu and +3V3 on In4.Cu — 3729 track
+segments and 521 vias. Real `kicad-cli pcb drc` reports **0 errors and
+0 unconnected items** — the only remaining findings are the same benign
+`lib_footprint_mismatch` warnings this project (and Manifold before it)
+has always carried, now 19 of them.
 
 Routing on a board this dense (242 nets, a 0.5mm-pitch H-bridge QFN, 8
 layers) sits right at FreeRouting's practical convergence limit:
@@ -659,11 +659,76 @@ hidden — each is either deliberately scoped out or flagged during the
 step that surfaced it.
 
 **Blocking fab:**
+- ~~**Eight 5 V sensor inputs fed a 3.3 V ADC with no divider.**~~
+  **FIXED** — and this one was a real defect in shipped-looking work,
+  found while writing the firmware's speed-density fuelling. `MAP`,
+  `TPS`, `APP1`, `APP2`, `TPS1`, `TPS2`, `OILP` and `FUELP` are all
+  external **5 V ratiometric** sensors, but this MCU's ADC reference is
+  `VDD_HV_ADC0/1` at **3.3 V**, and each of those eight had only a
+  1 kΩ + 22 nF RC filter in front of it — no divider. Everything above
+  3.3 V converted to `0xFFF`, so a 10–105 kPa MAP sensor stopped reading
+  at **~73 kPa**: the ECU went blind from part throttle upward, which is
+  precisely where a fuelling error damages pistons. It also quietly
+  defeated the `APP1`/`APP2` and `TPS1`/`TPS2` redundancy comparison the
+  ETC hardware exists for — two channels that both clamp at full scale
+  agree with each other perfectly while both being wrong.
+
+  That it was an oversight rather than a choice is clear from the rest
+  of the board, which divides correctly everywhere else: `VBATT` has a
+  real 68k/10k divider, and `IAT`/`CLT` were already fixed to pull up to
+  3.3 V rather than 5 V.
+
+  **It was not a device-damage bug**, which is worth stating plainly
+  because it changes the urgency: Table 42 footnote 3 of the MPC5606BK
+  data sheet says `VAINx` may exceed `VDD_ADC1` while remaining within
+  absolute maximum ratings, with the conversion simply clamping, and the
+  1 kΩ series resistors held pad injection to ~1.4 mA against the ±5 mA
+  `IINJ` limit. A measurement failure, not a smoke failure.
+
+  **The fix** turns each RC into a 2:1 divider — add a bottom leg, raise
+  the existing series resistor to match — so 5.00 V lands at 2.500 V
+  with 0.8 V of headroom, and the 22 nF cap stays where it is. Eight new
+  parts (`R94`–`R101`), eight value changes.
+
+  **4.7 kΩ/4.7 kΩ was derived, not picked.** Table 42 footnote 4 gives
+  no fixed source-impedance limit — it requires the source to charge
+  `CS` within `tADC1_S` — so it was solved from the real numbers. Worst
+  case *ignoring the 22 nF cap entirely*: settling to ½ LSB at 12 bits
+  is ln(2×4096) = 9.01 time constants, inside the 500 ns `Tsample` floor
+  the Reference Manual states as a hardware requirement (Table 28-1,
+  footnote 3), against a sampling network of `CS` 5 pF + `CP1/2/3`
+  (3 + 1 + 1.5 pF) = 10.5 pF and internal `RSW2` 2 kΩ + `RAD` 0.3 kΩ.
+  That allows 5.29 kΩ total, so **2.99 kΩ external** — and the chosen
+  Thévenin 2.35 kΩ fits with margin. *With* the cap fitted (the real
+  circuit) it is far looser still: the cap is a ~2000:1 charge
+  reservoir, so charge sharing costs 0.048 % as a systematic gain error
+  (~1.5 LSB against a ±6 LSB TUE) and it recovers with τ = 52 µs against
+  a per-channel sample interval of whole milliseconds. Loading is 9.4 kΩ
+  / 532 µA across the sensor; going higher would load the sensor less
+  but cost accuracy twice over, in settling time and in offset from ADC
+  input leakage across a larger Thévenin resistance. 4.7 kΩ was already
+  a BOM line item. 1 % tolerance is specified here where the rest of the
+  board is not fussy, because a divider **ratio** error is a direct gain
+  error on the reading.
+
+  Two side effects, both checked rather than assumed. The RC corner
+  moves 7.2 kHz → 3.1 kHz, which is fine and arguably better — intake
+  pulsation on an 8-cylinder engine at 6000 rpm is 400 Hz and wants
+  filtering out of a steady MAP reading. And on a power-up where +5 V
+  leads +3V3, the old 1 kΩ fed (5.0 − 0.3)/1k = **4.7 mA** into the pad
+  clamp, sitting right on the ±5 mA `IINJ` limit; the divider cuts that
+  to ~1 mA.
+
+  The firmware side needed no change: `ecu-firmware`'s
+  `config/engine.toml` had already been written with
+  `adc_counts_at_max = 3103`, which is exactly 2.500 V of 3.3 V at
+  12 bits.
 - ~~**No BOM.**~~ **DONE** — [`build_bom.py`](build_bom.py) generates it
-  straight from the schematic (68 orderable line items covering all 234
+  straight from the schematic (68 orderable line items covering all 243
   placements, with a coverage assertion so it cannot drift from the
-  board), and renders [`ECU_BOM.html`](ECU_BOM.html) as a standalone
-  parts-list page. Honest about scope: actives/connectors/
+  board, and a value-spelling assertion so one electrical value cannot
+  reach the BOM as two order lines), and renders
+  [`ECU_BOM.html`](ECU_BOM.html) as a standalone parts-list page. Honest about scope: actives/connectors/
   electromechanical carry real MPNs verified against manufacturer
   datasheets during design, passives are specified parametrically
   (value + package + AEC-Q200) rather than pinned to one vendor, and

@@ -137,14 +137,21 @@ kpa_at_max = 105
 # ADC counts at the sensor's full-scale output. The MCU's ADC is 12-bit
 # (0..4095) referenced to 3.3 V.
 #
-# IMPORTANT, AND CURRENTLY UNRESOLVED IN HARDWARE: the sensor is
-# 5 V-ratiometric but the ADC reference is 3.3 V, and the board fits no
-# divider on this input - only an RC filter. If that is left as-is the
-# sensor's top ~34% of range would sit above the ADC's reference. With a
-# 2:1 divider fitted (as the EGT channel already has, explicitly to map
-# 5 V into the 3.3 V domain) full scale lands at about 2.5 V, i.e. 3103
-# counts. The value below assumes THAT fix. If the board ships without a
-# divider, set this to 4095 and accept the clipped top end.
+# The sensor is 5 V-ratiometric and the ADC reference is 3.3 V, so the
+# board divides 2:1 on this input: 4.7k/4.7k either side of the ADC pin,
+# with the existing 22 nF filter cap still at the pin (ecu-pcb,
+# build_schematic.py, MAP/TPS front end). 5.00 V maps to 2.500 V, which
+# is 3103 counts of 4095, and leaves 0.8 V of headroom under the
+# reference.
+#
+# That divider did not exist until it was found missing while this file
+# was being written - the input was a bare 1k + 22nF RC, so everything
+# above 3.3 V converted to 0xFFF and this sensor stopped reading at
+# ~73 kPa of its 105 kPa range. If you are running a board built before
+# that fix, set this to 4095 and accept the clipped top end.
+#
+# Change this if you change the divider. It is a straight ratio: counts
+# = 4095 * (5 V * ratio) / 3.3 V.
 adc_counts_at_max = 3103
 
 [ve]

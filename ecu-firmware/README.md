@@ -953,6 +953,26 @@ extrapolating, and at 3000 rpm / 100 kPa / 40 °C the integer path gives
 9272 µs against 9277 µs from the floating-point reference — a 0.05 %
 difference, entirely integer truncation.
 
+### The MAP transfer function, and a hardware bug it exposed
+
+`fuel_map_kpa_from_adc()` converts raw counts to kPa across the two
+calibrated points in `[map_sensor]`. Writing it is what surfaced a real
+defect on the board: `MAP` — along with `TPS`, `APP1`, `APP2`, `TPS1`,
+`TPS2`, `OILP` and `FUELP` — is a **5 V ratiometric** sensor feeding a
+**3.3 V**-referenced ADC pin through nothing but a 1 kΩ + 22 nF RC
+filter. No divider. Everything above 3.3 V converted to `0xFFF`, so the
+MAP reading stopped at **~73 kPa of a 105 kPa range**: the ECU went
+blind from part throttle upward, exactly where a lean mixture damages
+pistons.
+
+That has been fixed in `ecu-pcb` — each of those eight inputs is now a
+2:1 divider (4.7 kΩ/4.7 kΩ, values derived against the ADC's own
+sampling-network numbers rather than picked; see that project's README
+for the full derivation), putting 5.00 V at 2.500 V. Which is why
+`adc_counts_at_max = 3103`: 2.500 V of 3.3 V at 12 bits. **Change that
+number if you change the divider** — it is the one constant in this file
+that describes the board rather than the engine.
+
 **A real bug this work caught**, in the firing-order scheduling
 committed just before it: `event.cylinder` was being set to
 `firing_order[i] - 1u`, but `cylinder_event_t.cylinder` is documented

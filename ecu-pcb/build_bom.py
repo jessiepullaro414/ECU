@@ -183,6 +183,80 @@ def value_token(value):
     return value.split()[0] if value.split() else "?"
 
 
+def tolerance_token(value):
+    """A tolerance written into a passive's value string, e.g.
+    '4.7k 1% MAP divider hi (AEC-Q200)' -> '1%'. Returns None when the
+    schematic does not call one out.
+
+    This exists because a tolerance is a REAL ORDERING REQUIREMENT, not
+    a comment. The divider pairs on the 5V sensor inputs are specified
+    1% because a divider RATIO error is a direct gain error on the
+    reading; if that does not reach the BOM, the specification is
+    decorative and a purchaser buys 5% parts. Parts that say nothing
+    keep the unqualified default they always had."""
+    m = re.search(r"\b(\d+(?:\.\d+)?)\s?%", value)
+    return f"{m.group(1)}%" if m else None
+
+
+# Multipliers for parsing a passive value token into a real number, so
+# two spellings of one value can be recognised as the same orderable
+# part. "R" is the ohm marker in infix notation (82R5 = 82.5 ohm).
+_VALUE_MULT = {"k": 1e3, "K": 1e3, "M": 1e6, "m": 1e-3,
+               "u": 1e-6, "n": 1e-9, "p": 1e-12, "R": 1.0, "": 1.0}
+
+
+def parse_value(token):
+    """Numeric value of a passive's value token, or None if it isn't a
+    plain value. Handles both the decimal form (4.7k, 1M, 499R) and the
+    infix form electronics uses to survive smudged print (4k7 = 4.7k,
+    82R5 = 82.5R, 1M0 = 1M)."""
+    m = re.match(r"^(\d+)([kKMRunp])(\d+)$", token)
+    if m:
+        return float(f"{m.group(1)}.{m.group(3)}") * _VALUE_MULT[m.group(2)]
+    m = re.match(r"^([\d.]+)\s*([kKMmunpR]?)$", token)
+    if m:
+        return float(m.group(1)) * _VALUE_MULT.get(m.group(2), 1.0)
+    return None
+
+
+def check_value_spellings(lines):
+    """Fail if one electrical value reaches the BOM as two order lines
+    purely because it was spelled two ways.
+
+    This is a REAL purchasing bug, not tidiness: '4k7' and '4.7k' are
+    the same resistor, so splitting them means ordering two reels of one
+    part - and it drifts back in silently every time a value is
+    transcribed from a vendor's schematic in that vendor's notation.
+
+    A declared tolerance is NOT a collision. A 1% part is a genuinely
+    different orderable part from a 5% one, so '1k 1%' is allowed to sit
+    on its own line beside '1k' - that split is the point, not a fault.
+    """
+    seen = defaultdict(list)
+    for _cat, label, _mfr, _desc, package, _qty, refs, _qual in lines:
+        parts_ = label.split()
+        if len(parts_) < 2:
+            continue
+        value = parse_value(parts_[0])
+        if value is None:
+            continue
+        tol = next((t for t in parts_[1:] if t.endswith("%")), None)
+        seen[(parts_[-1], value, tol, package)].append((label, refs))
+
+    clashes = {k: v for k, v in seen.items() if len(v) > 1}
+    if clashes:
+        detail = "; ".join(
+            f"{k[1]:g} ({k[0]}) split across " + " and ".join(f"'{lb}'" for lb, _ in v)
+            for k, v in clashes.items())
+        raise AssertionError(
+            f"BOM has {len(clashes)} value(s) split across order lines by "
+            f"spelling alone: {detail}. Normalise the value token in "
+            f"build_schematic.py; if the split is a real tolerance "
+            f"difference, write it as e.g. '1k 1%' so it is explicit.")
+    print(f"Value-spelling check OK: no value split across two order lines "
+          f"({len(seen)} distinct passive line identities)")
+
+
 def build():
     parts = load_parts()
     lines = []          # (category, mpn, mfr, desc, package, qty, refs, qual)
@@ -223,17 +297,23 @@ def build():
             continue
         if prefix not in PASSIVE_PREFIXES:
             continue
-        pgroups[(prefix, value_token(p["value"]), p["package"])].append(p["ref"])
+        pgroups[(prefix, value_token(p["value"]), tolerance_token(p["value"]),
+                 p["package"])].append(p["ref"])
 
     kind = {"R": ("Resistor", "thick film, AEC-Q200"),
             "C": ("Capacitor", "X7R/X5R ceramic, AEC-Q200"),
             "L": ("Inductor", "AEC-Q200"),
             "FB": ("Ferrite bead", "AEC-Q200"),
             "Y": ("Crystal", "AEC-Q200")}
-    for (prefix, val, package), refs in pgroups.items():
+    for (prefix, val, tol, package), refs in pgroups.items():
         name, note = kind.get(prefix, ("Part", ""))
-        lines.append(("Passives", f"{val} {name}", "(any qualified)",
-                      f"{name} {val} - {note}", package, len(refs),
+        # A called-out tolerance becomes part of the orderable identity,
+        # so a 1% line cannot be silently filled with 5% stock.
+        label = f"{val} {tol} {name}" if tol else f"{val} {name}"
+        desc = (f"{name} {val}, {tol} tolerance - {note}" if tol
+                else f"{name} {val} - {note}")
+        lines.append(("Passives", label, "(any qualified)",
+                      desc, package, len(refs),
                       collapse_refs(refs), "AEC-Q200"))
 
     order = {"Semiconductors": 0, "Electromechanical": 1, "Connectors": 2, "Passives": 3}
@@ -256,6 +336,7 @@ def main():
     assert placements == len(parts), \
         f"BOM covers {placements} placements but schematic has {len(parts)} parts"
     print("Coverage check OK: every schematic part appears on exactly one BOM line")
+    check_value_spellings(lines)
 
     html = render_html(lines, parts)
     with open(OUT_HTML, "w", encoding="utf-8") as f:

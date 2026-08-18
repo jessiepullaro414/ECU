@@ -1755,7 +1755,9 @@ place(f"{LIB}:C_V", "C56", "2.2nF Nernst node filter (AEC-Q200) - real Bosch app
 # value/topology: goes to GND (its lower plate is a real ground symbol,
 # not a wire down to the VM node - confirmed at 1400 DPI after an
 # earlier read of the same figure got this wrong).
-place(f"{LIB}:R_V", "R46", "4k7 US series R to UP node (AEC-Q200) - real Bosch",
+# (Bosch's own diagram writes this value "4k7"; spelled 4.7k here so it
+# lands on the same orderable BOM line as every other 4.7k on the board.)
+place(f"{LIB}:R_V", "R46", "4.7k US series R to UP node (AEC-Q200) - real Bosch",
       440, 1620, conn={'1': ('label', 'O2_US'), '2': ('label', 'O2_UP')})
 # app-note value/topology - previously missing entirely (O2_US went
 # straight to the sensor connector with no on-board reference network).
@@ -1784,12 +1786,75 @@ place(f"{LIB}:R_V", "R33", "1k heater gate resistor (AEC-Q200)", 560, 1370,
 # sensor lead is disconnected. Sensors themselves are external (ratio-
 # metric, 5V-referenced) - connect via the harness connector in step 9;
 # MAP_SIG/TPS_SIG are the sensor-side stubs.
-place(f"{LIB}:R_V", "R22", "1k MAP RC filter (AEC-Q200)", 700, 1400,
+# REAL BUG FOUND AND FIXED (all 8 5V-ratiometric analog inputs: MAP,
+# TPS, APP1/2, TPS1/2, OILP, FUELP). These sensors are supplied from
+# +5V and swing 0-5V, but this MCU's ADC reference is VDD_HV_ADC0/1 at
+# 3.3V (see the VRH/VRL note below). The original front end was a bare
+# 1k + 22nF RC with NO DIVIDER, so everything above 3.3V converted to
+# 0xFFF: on a 10-105 kPa MAP sensor the reading stopped at ~73 kPa,
+# blinding the ECU from part throttle upward - exactly where a fuelling
+# error damages pistons. It also defeated the APP1/APP2 + TPS1/TPS2
+# redundancy comparison the ETC hardware exists for.
+#
+# The board already divided correctly everywhere else (VBATT 68k/10k
+# below, IAT/CLT pulled up to 3.3V not 5V), so this was an oversight on
+# these eight, not a deliberate choice.
+#
+# NOT a device-damage bug, which is worth stating because it changes how
+# urgent this is: Table 42's own footnote 3 says VAINx may exceed
+# VDD_ADC1 while remaining within absolute maximum ratings, with the
+# conversion simply clamping to 0xFFF. The 1k series resistors held pad
+# injection to (5.0-3.6)/1k = 1.4mA against the +/-5mA IINJ limit. It is
+# a measurement failure, not a smoke failure.
+#
+# THE FIX: turn each RC into a 2:1 divider by adding a bottom leg and
+# raising the existing series resistor to match, so 5.0V maps to 2.50V
+# with 0.8V of headroom under the 3.3V reference. The 22nF cap stays
+# where it is and keeps doing its real job.
+#
+# WHY 4.7k/4.7k, derived rather than picked:
+#   - Thevenin source impedance = 4.7k||4.7k = 2.35k. Table 42's
+#     footnote 4 gives no fixed impedance limit - it requires the source
+#     to charge CS within tADC1_S - so this was solved from the real
+#     numbers. Worst case, IGNORING the 22nF cap entirely: settle to
+#     1/2 LSB at 12 bits = ln(2*4096) = 9.01 time constants inside the
+#     500ns Tsample floor the Reference Manual states as a hardware
+#     requirement (Table 28-1, footnote 3), against a sampling network
+#     of CS 5pF + CP1/2/3 (3+1+1.5pF) = 10.5pF and internal RSW2 2k +
+#     RAD 0.3k. That allows 5.29k total, so 2.99k external - and 2.35k
+#     fits with margin. WITH the 22nF fitted (the real circuit) the cap
+#     is a 2000:1 charge reservoir and the constraint is far looser
+#     still: charge sharing costs 10.5p/22.01n = 0.048% as a systematic
+#     gain error, ~1.5 LSB against a +/-6 LSB TUE, and the cap recovers
+#     with tau = 2.35k*22n = 52us against a per-channel sample interval
+#     of whole milliseconds.
+#   - Loading: 9.4k across the sensor, 532uA at 5V. Higher values would
+#     load the sensor less but cost accuracy twice over - more settling
+#     time, and more offset from ADC input leakage across a bigger
+#     Thevenin resistance.
+#   - 4.7k is already a BOM line item on this board.
+#   - 1% tolerance is specified here where the rest of the board is not
+#     fussy, because a DIVIDER RATIO error is a direct gain error on the
+#     reading; 1% on both legs is well under the sensor's own error.
+#
+# One real side benefit: during a power-up where +5V comes up before
+# +3V3, the old 1k fed (5.0-0.3)/1k = 4.7mA into the pad clamp, sitting
+# right on the +/-5mA IINJ limit. The divider cuts that to ~1mA.
+#
+# The RC corner moves from 1k*22nF = 7.2kHz to 2.35k*22nF = 3.1kHz.
+# That is fine and arguably better: intake pulsation on an 8-cylinder
+# engine at 6000 rpm is 400Hz, which wants filtering out of a steady
+# MAP reading, and no real sensor here carries useful content above it.
+place(f"{LIB}:R_V", "R22", "4.7k 1% MAP divider hi (AEC-Q200)", 700, 1400,
       conn={'1': ('label', 'MAP_SIG'), '2': ('label', 'MAP_ADC')})
+place(f"{LIB}:R_V", "R94", "4.7k 1% MAP divider lo (AEC-Q200)", 700, 1440,
+      conn={'1': ('label', 'MAP_ADC'), '2': ('pwr', 'GND')})
 place(f"{LIB}:C_V", "C33", "22nF MAP RC filter (AEC-Q200)", 700, 1420,
       conn={'1': ('label', 'MAP_ADC'), '2': ('pwr', 'GND')})
-place(f"{LIB}:R_V", "R23", "1k TPS RC filter (AEC-Q200)", 730, 1400,
+place(f"{LIB}:R_V", "R23", "4.7k 1% TPS divider hi (AEC-Q200)", 730, 1400,
       conn={'1': ('label', 'TPS_SIG'), '2': ('label', 'TPS_ADC')})
+place(f"{LIB}:R_V", "R95", "4.7k 1% TPS divider lo (AEC-Q200)", 730, 1440,
+      conn={'1': ('label', 'TPS_ADC'), '2': ('pwr', 'GND')})
 place(f"{LIB}:C_V", "C34", "22nF TPS RC filter (AEC-Q200)", 730, 1420,
       conn={'1': ('label', 'TPS_ADC'), '2': ('pwr', 'GND')})
 
@@ -1875,7 +1940,7 @@ place(f"{LIB}:R_V", "R24", "4.22k IAT pull-up (AEC-Q200) - real GM-style open-el
       conn={'1': ('pwr', '+3V3'), '2': ('label', 'IAT_ADC')})
 place(f"{LIB}:C_V", "C35", "100nF IAT filter (AEC-Q200) - matches CLT's C36", 760, 1420,
       conn={'1': ('label', 'IAT_ADC'), '2': ('pwr', 'GND')})
-place(f"{LIB}:R_V", "R25", "1.00k CLT pull-up (AEC-Q200) - real GM-style sending unit, same sizing as thermo-pcb's R12", 790, 1400,
+place(f"{LIB}:R_V", "R25", "1k 1% CLT pull-up (AEC-Q200) - real GM-style sending unit, same sizing as thermo-pcb's R12", 790, 1400,
       conn={'1': ('pwr', '+3V3'), '2': ('label', 'CLT_ADC')})
 place(f"{LIB}:C_V", "C36", "100nF CLT filter (AEC-Q200) - matches thermo-pcb's C24", 790, 1420,
       conn={'1': ('label', 'CLT_ADC'), '2': ('pwr', 'GND')})
@@ -2426,12 +2491,18 @@ place(f"{LIB}:R_V", "R52", "4.7k CAM2 COUT pull-up to +3V3 (AEC-Q200)", 1310, 13
 # Cheap to add and genuinely valuable: real oil- and fuel-pressure
 # inputs are what let firmware implement low-oil-pressure and
 # fuel-pressure-loss protection cuts rather than just logging them.
-place(f"{LIB}:R_V", "R53", "1k oil-pressure RC filter (AEC-Q200)", 1400, 1400,
+# 2:1 divided like MAP/TPS above - same 5V sensors, same 3.3V ADC, same
+# reasoning; see the derivation there.
+place(f"{LIB}:R_V", "R53", "4.7k 1% oil-pressure divider hi (AEC-Q200)", 1400, 1400,
       conn={'1': ('label', 'OILP_SIG'), '2': ('label', 'OILP_ADC')})
+place(f"{LIB}:R_V", "R96", "4.7k 1% oil-pressure divider lo (AEC-Q200)", 1400, 1440,
+      conn={'1': ('label', 'OILP_ADC'), '2': ('pwr', 'GND')})
 place(f"{LIB}:C_V", "C60", "22nF oil-pressure RC filter (AEC-Q200)", 1400, 1420,
       conn={'1': ('label', 'OILP_ADC'), '2': ('pwr', 'GND')})
-place(f"{LIB}:R_V", "R54", "1k fuel-pressure RC filter (AEC-Q200)", 1430, 1400,
+place(f"{LIB}:R_V", "R54", "4.7k 1% fuel-pressure divider hi (AEC-Q200)", 1430, 1400,
       conn={'1': ('label', 'FUELP_SIG'), '2': ('label', 'FUELP_ADC')})
+place(f"{LIB}:R_V", "R97", "4.7k 1% fuel-pressure divider lo (AEC-Q200)", 1430, 1440,
+      conn={'1': ('label', 'FUELP_ADC'), '2': ('pwr', 'GND')})
 place(f"{LIB}:C_V", "C61", "22nF fuel-pressure RC filter (AEC-Q200)", 1430, 1420,
       conn={'1': ('label', 'FUELP_ADC'), '2': ('pwr', 'GND')})
 
@@ -2583,7 +2654,9 @@ place(f"{LIB}:R_V", "R72", "82R5 Nernst-VM node bridge (AEC-Q200) - LSU4.2 (301R
       1365, 1750, conn={'1': ('label', 'O2B_VM'), '2': ('label', 'O2B_UN')})
 place(f"{LIB}:C_V", "C72", "2.2nF Nernst node filter to GND (AEC-Q200)", 1390, 1750,
       conn={'1': ('label', 'O2B_UN'), '2': ('pwr', 'GND')})
-place(f"{LIB}:R_V", "R73", "4k7 US series R to UP node (AEC-Q200)", 1340, 1770,
+# Same value as R46 on the first CJ125 - Bosch writes it "4k7"; spelled
+# 4.7k here for one BOM line, see the note at R46.
+place(f"{LIB}:R_V", "R73", "4.7k US series R to UP node (AEC-Q200)", 1340, 1770,
       conn={'1': ('label', 'O2B_US'), '2': ('label', 'O2B_UP')})
 place(f"{LIB}:MOSFET_N", "Q17", "PMV37ENEA automotive (AEC-Q101), O2 bank-2 heater driver",
       1500, 1690,
@@ -2768,9 +2841,9 @@ place(f"{LIB}:R_V", "R77", "10k SPI_CS_EGT pull-up (AEC-Q200)", 800, 1940,
       conn={'1': ('pwr', '+3V3'), '2': ('label', 'SPI_CS_EGT')})
 # Thermocouple bias network (TI Fig 50): pull-up on one leg, pull-down
 # on the other - see the open-lead detection note above.
-place(f"{LIB}:R_V", "R78", "1.00M EGT TC bias pull-up (AEC-Q200) - real TI Fig 50 value",
+place(f"{LIB}:R_V", "R78", "1M EGT TC bias pull-up (AEC-Q200) - real TI Fig 50 value",
       710, 2032, conn={'1': ('pwr', '+3V3'), '2': ('label', 'EGT_TC_P')})
-place(f"{LIB}:R_V", "R91", "1.00M EGT TC bias pull-down (AEC-Q200) - real TI Fig 50 value",
+place(f"{LIB}:R_V", "R91", "1M EGT TC bias pull-down (AEC-Q200) - real TI Fig 50 value",
       750, 2032, conn={'1': ('label', 'EGT_TC_M'), '2': ('pwr', 'GND')})
 # Series + anti-aliasing filter, one per leg.
 place(f"{LIB}:R_V", "R92", "499R EGT TC series (AEC-Q200) - real TI Fig 50 RDIFFA",
@@ -2794,7 +2867,7 @@ place(f"{LIB}:C_V", "C88", "1uF EGT TC differential (AEC-Q200) - real TI Fig 50 
 # the MAX9924 COUT pull-ups, reused here rather than re-derived.
 place(f"{LIB}:R_V", "R79", "1k flex-fuel series protection (AEC-Q200)", 1148, 1980,
       conn={'1': ('label', 'FLEXFUEL_SIG_RAW'), '2': ('label', 'FLEXFUEL_SIG')})
-place(f"{LIB}:R_V", "R80", "4k7 flex-fuel pull-up to +3V3 (AEC-Q200)", 1252, 1928,
+place(f"{LIB}:R_V", "R80", "4.7k flex-fuel pull-up to +3V3 (AEC-Q200)", 1252, 1928,
       conn={'1': ('pwr', '+3V3'), '2': ('label', 'FLEXFUEL_SIG')})
 place(f"{LIB}:C_V", "C74", "1nF flex-fuel filter (AEC-Q200)", 1252, 2032,
       conn={'1': ('label', 'FLEXFUEL_SIG'), '2': ('pwr', 'GND')})
@@ -2900,20 +2973,33 @@ place(f"{LIB}:C_V", "C77", "100nF ETC VPWR HF decouple (AEC-Q200)", 1564, 2084,
 # normally its own separate harness run - this board only has two
 # harness connectors total, so APP1/APP2 riding on the "sensor+CAN"
 # connector is a real, honestly-noted simplification, not a hidden one.
-place(f"{LIB}:R_V", "R87", "1k APP1 RC filter (AEC-Q200)", 2162, 1980,
+# 2:1 divided like MAP/TPS above. These four matter twice over: the
+# whole point of APP1/APP2 and TPS1/TPS2 is a redundant plausibility
+# check, and two channels that both clamp at 0xFFF agree with each other
+# perfectly while both being wrong - a redundancy check that cannot fail
+# is worse than none.
+place(f"{LIB}:R_V", "R87", "4.7k 1% APP1 divider hi (AEC-Q200)", 2162, 1980,
       conn={'1': ('label', 'APP1_SIG'), '2': ('label', 'APP1_ADC')})
+place(f"{LIB}:R_V", "R98", "4.7k 1% APP1 divider lo (AEC-Q200)", 2162, 2084,
+      conn={'1': ('label', 'APP1_ADC'), '2': ('pwr', 'GND')})
 place(f"{LIB}:C_V", "C78", "22nF APP1 RC filter (AEC-Q200)", 2162, 2032,
       conn={'1': ('label', 'APP1_ADC'), '2': ('pwr', 'GND')})
-place(f"{LIB}:R_V", "R88", "1k APP2 RC filter (AEC-Q200)", 2266, 1980,
+place(f"{LIB}:R_V", "R88", "4.7k 1% APP2 divider hi (AEC-Q200)", 2266, 1980,
       conn={'1': ('label', 'APP2_SIG'), '2': ('label', 'APP2_ADC')})
+place(f"{LIB}:R_V", "R99", "4.7k 1% APP2 divider lo (AEC-Q200)", 2266, 2084,
+      conn={'1': ('label', 'APP2_ADC'), '2': ('pwr', 'GND')})
 place(f"{LIB}:C_V", "C79", "22nF APP2 RC filter (AEC-Q200)", 2266, 2032,
       conn={'1': ('label', 'APP2_ADC'), '2': ('pwr', 'GND')})
-place(f"{LIB}:R_V", "R89", "1k TPS1 RC filter (AEC-Q200)", 2370, 1980,
+place(f"{LIB}:R_V", "R89", "4.7k 1% TPS1 divider hi (AEC-Q200)", 2370, 1980,
       conn={'1': ('label', 'TPS1_SIG'), '2': ('label', 'TPS1_ADC')})
+place(f"{LIB}:R_V", "R100", "4.7k 1% TPS1 divider lo (AEC-Q200)", 2370, 2084,
+      conn={'1': ('label', 'TPS1_ADC'), '2': ('pwr', 'GND')})
 place(f"{LIB}:C_V", "C80", "22nF TPS1 RC filter (AEC-Q200)", 2370, 2032,
       conn={'1': ('label', 'TPS1_ADC'), '2': ('pwr', 'GND')})
-place(f"{LIB}:R_V", "R90", "1k TPS2 RC filter (AEC-Q200)", 2474, 1980,
+place(f"{LIB}:R_V", "R90", "4.7k 1% TPS2 divider hi (AEC-Q200)", 2474, 1980,
       conn={'1': ('label', 'TPS2_SIG'), '2': ('label', 'TPS2_ADC')})
+place(f"{LIB}:R_V", "R101", "4.7k 1% TPS2 divider lo (AEC-Q200)", 2474, 2084,
+      conn={'1': ('label', 'TPS2_ADC'), '2': ('pwr', 'GND')})
 place(f"{LIB}:C_V", "C81", "22nF TPS2 RC filter (AEC-Q200)", 2474, 2032,
       conn={'1': ('label', 'TPS2_ADC'), '2': ('pwr', 'GND')})
 

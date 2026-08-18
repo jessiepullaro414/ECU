@@ -1,0 +1,88 @@
+# =====================================================================
+# Engine configuration - the single source of truth.
+#
+# Edit THIS file, then run:   python tools/gen_engine_config.py
+# which regenerates inc/engine_config.h. Do not edit that header
+# directly; it is overwritten.
+#
+# EVERYTHING IN THE [engine], [crank], [injection] AND [ignition]
+# SECTIONS IS A DEFAULT, NOT A MEASUREMENT. The values describe a common
+# setup - a 36-1 crank wheel on an 8-cylinder engine with the usual
+# small-block firing order - and have been confirmed against no real
+# engine, because there isn't one yet.
+#
+# Get the wheel pattern or firing order wrong and cylinders fire at the
+# wrong time, which is how engines get damaged. The generator checks
+# that these values are consistent with EACH OTHER; nothing can check
+# that they match YOUR engine. Verify every one before running.
+# =====================================================================
+
+[engine]
+# Number of cylinders. The board has 8 injector and 8 ignition channels;
+# a 4- or 6-cylinder engine uses the first N and leaves the rest unwired
+# at the harness, which is how one board covers 4/6/8 cylinders.
+cylinders = 8
+
+# One full engine cycle in crank degrees. 720 for a four-stroke (two
+# crank revolutions per cycle), 360 for a two-stroke - which also makes
+# the cam sensor unnecessary, since there is no 360-vs-720 ambiguity to
+# resolve.
+cycle_degrees = 720
+
+# Firing order, as cylinder numbers in the order they fire. Must be a
+# permutation of 1..cylinders - the generator checks this, because a
+# typo here (a repeated or missing cylinder) is otherwise very hard to
+# spot and produces an engine that runs badly rather than not at all.
+#
+# Default is the common small-block V8 order. Typical alternatives:
+#   4-cylinder inline:  [1, 3, 4, 2]
+#   6-cylinder inline:  [1, 5, 3, 6, 2, 4]
+# These vary by manufacturer. Check yours.
+firing_order = [1, 8, 4, 3, 6, 5, 7, 2]
+
+[crank]
+# Trigger wheel pattern. "36-1" means 36 evenly spaced tooth positions
+# with one physically removed: 35 real teeth plus a gap that marks a
+# known angle. "60-2" is the other common pattern.
+#
+# teeth sets angular resolution (360/36 = 10 degrees per tooth here).
+# missing is what makes absolute position findable at all - the firmware
+# finds the gap by spotting a tooth period much longer than the last.
+teeth = 36
+missing = 1
+
+# Crank angle, in degrees BEFORE cylinder 1's compression TDC, at which
+# the first tooth AFTER the gap passes the sensor.
+#
+# This is the one value that cannot be derived from anything else: it
+# depends on where the sensor is physically bolted to the engine. It is
+# what converts "which tooth" into "what angle", so an error here shifts
+# ALL ignition timing by that amount. Measure it on the real engine -
+# the default below is a placeholder, not a typical value to rely on.
+gap_to_tdc_deg = 90
+
+[injection]
+# How long the injector takes to physically open after the driver turns
+# on. Added to every computed pulse width; omit it and the engine runs
+# lean by roughly this much at every load point.
+#
+# This varies strongly with battery voltage, which is exactly why the
+# board has a dedicated VBATT sense channel. A single figure here is a
+# placeholder for the voltage-compensated table that belongs in its
+# place once there is an engine to measure against.
+dead_time_us = 1000
+
+[ignition]
+# Coil charge time before the spark. Too short gives a weak spark; too
+# long overheats the coil. Also really wants a voltage-compensated
+# table. The L9779WD-SPI's own over-current protection is a hardware
+# backstop, not the primary limit.
+dwell_us = 3000
+
+[timebase]
+# eMIOS global prescaler divide ratio, applied to the confirmed 60 MHz
+# peripheral clock. 60 gives a 1 MHz time base: 1 us per tick, and
+# 65.535 ms of range on the eMIOS channels' 16-bit counters - far more
+# than the longest event being timed (an injector pulse is single-digit
+# milliseconds even at full load).
+emios_prescaler = 60

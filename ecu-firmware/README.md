@@ -842,20 +842,35 @@ second real source to check against.
 
 ## Engine configuration
 
-Engine-specific facts live in one place,
-[`inc/engine_config.h`](inc/engine_config.h): cylinder count, crank
-trigger wheel pattern, firing order, injector dead time, ignition dwell.
-These were previously scattered as "TODO, needs a real number" comments
-that blocked the firing path, which was the wrong shape for them — they
-are not facts to discover from a datasheet, they are things the person
-fitting the ECU knows about their engine.
-
-Every setting is `#ifndef`-guarded, so one source tree can build for
-different engines without editing the file:
+Engine-specific facts live in **[`config/engine.toml`](config/engine.toml)**
+— cylinder count, crank trigger wheel pattern, firing order, injector
+dead time, ignition dwell. Edit that file and run:
 
 ```bash
--DENGINE_CYLINDERS=4u -DCRANK_WHEEL_TEETH=60u -DCRANK_WHEEL_MISSING=2u
+python tools/gen_engine_config.py
 ```
+
+which validates it and regenerates `inc/engine_config.h` (a generated
+file — don't edit it directly). These were previously scattered as
+"TODO, needs a real number" comments blocking the firing path, which was
+the wrong shape for them: they are not facts to discover from a
+datasheet, they are things the person fitting the ECU knows about their
+engine.
+
+Putting them in a file read by a generator — the same pattern the BOM
+and the Type-K table use — also buys **real validation**. A `#error` in
+a header can say "that's wrong"; the generator says *which* cylinder is
+duplicated and which never fires:
+
+```
+engine.firing_order must list each cylinder 1..8 exactly once
+  (repeated: [1]; never fired: [2])
+```
+
+That matters because a firing-order typo produces an engine that runs
+*badly* rather than one that obviously doesn't run. It also checks teeth
+divide 360, missing < teeth, cycle divides by cylinder count, and the
+prescaler fits the 8-bit GPRE field.
 
 **The ENGINE values are DEFAULTS, not measurements.** They describe a
 common setup (36-1 wheel, 8 cylinders, the usual small-block firing
@@ -870,6 +885,17 @@ for your engine.
 
 Two things this unblocked:
 
+- **Firing-order scheduling is implemented.** `crank_capture_isr()`
+  finds the wheel's gap (a tooth period much longer than the last — with
+  *missing* teeth removed the gap spans *missing+1* intervals), counts
+  teeth from it, and walks the configured firing order to arm whichever
+  cylinder is due. Nothing is armed until the wheel's position is known
+  *and*, on a four-stroke, the cam has resolved which of the two
+  revolutions this is — firing on an unsynced wheel means firing at an
+  unknown angle. Verified by simulating the exact logic across four
+  configurations (4-cyl 60-2, 6-cyl 36-1, 8-cyl V8, and a 2-stroke
+  single that correctly skips cam sync): each fires every cylinder
+  exactly once per cycle, in the configured order, evenly spaced.
 - **The microsecond → tick conversion is now real.** `us_to_ticks()` and
   `angle_to_ticks()` existed but were never called; injector pulse
   widths were passed into the hardware as though microseconds were

@@ -89,8 +89,37 @@ static uint32_t angle_to_ticks(uint32_t period_ticks, uint32_t degrees_per_perio
  * injection_crank_synced() for what callers outside this file can use. */
 static uint32_t last_crank_capture;
 static uint32_t crank_period_ticks_val;
+static uint32_t prev_crank_period_ticks;
 static int crank_capture_valid = 0;
 static int cam_synced = 0;
+
+/* Position on the trigger wheel. tooth_index counts real teeth from the
+ * one immediately following the gap, which is the only angularly-known
+ * point on the wheel. wheel_synced stays 0 until the gap has actually
+ * been found - before that the position is genuinely unknown and
+ * nothing may be fired. */
+static uint8_t tooth_index;
+static uint8_t wheel_synced = 0;
+
+/* Which crank revolution of the engine cycle we are in. A four-stroke
+ * cycle spans two revolutions but the crank wheel repeats every one, so
+ * the wheel alone cannot tell them apart - that is exactly what the cam
+ * sensor resolves. Always 0 when ENGINE_CYCLE_DEGREES is 360. */
+static uint8_t revolution;
+
+static const uint8_t firing_order[ENGINE_CYLINDERS] = ENGINE_FIRING_ORDER;
+
+/* Real: how far ahead of its firing angle a cylinder gets armed. One
+ * full firing interval gives the eMIOS channel a whole inter-event
+ * window to be reprogrammed in, which is the standard arrangement -
+ * arming later risks losing the event to interrupt latency, arming
+ * earlier means acting on staler sensor data.
+ *
+ * HONEST LIMIT: the right value depends on the real arm-to-fire latency
+ * of this eMIOS setup, which needs bench measurement on hardware that
+ * does not exist yet. One interval is a defensible starting point, not
+ * a measured optimum. */
+#define ARM_LEAD_DEG  ENGINE_FIRING_INTERVAL_DEG
 
 /* Real, and now complete on the unit side: the caller supplies
  * microseconds, this converts to the eMIOS ticks the hardware actually
@@ -137,19 +166,102 @@ uint32_t injection_angle_to_ticks(uint16_t angle_from_ref_deg) {
                           angle_from_ref_deg);
 }
 
+/* Real gap detection. The wheel's missing teeth show up as one tooth
+ * period much longer than the last: with `missing` teeth removed the
+ * gap spans (missing + 1) normal intervals, so 36-1 gives roughly a 2x
+ * period and 60-2 roughly 3x.
+ *
+ * The comparison is deliberately made against 3/4 of that expected
+ * ratio rather than the ratio itself, and entirely in integers. The
+ * margin matters because the engine is accelerating: under hard
+ * cranking each tooth period is genuinely shorter than the last, which
+ * eats into the ratio and would make an exact test miss the gap. Being
+ * too eager is the safer failure - a false gap resyncs the wheel to a
+ * wrong position, which the very next real gap corrects, whereas a
+ * missed gap leaves the engine unsynced for a whole revolution.
+ *
+ * HONEST LIMIT: the 3/4 margin is reasoned, not measured. Real
+ * acceleration rates during a cold crank are exactly the thing to check
+ * on a bench before trusting this. */
+static int gap_detected(uint32_t period, uint32_t prev_period) {
+    if (prev_period == 0u) {
+        return 0;
+    }
+    return (period * 4u) > (prev_period * (CRANK_WHEEL_MISSING + 1u) * 3u);
+}
+
+/* Real: the crank angle, measured from cylinder 1's compression TDC,
+ * at which the cylinder holding position `order_index` in the firing
+ * order fires. Firing events are evenly spaced around the cycle, which
+ * the generator has already checked divides evenly. */
+static uint16_t fire_angle_for_order_index(uint8_t order_index) {
+    return (uint16_t)((uint32_t)order_index * ENGINE_FIRING_INTERVAL_DEG);
+}
+
 void crank_capture_isr(uint32_t capture_time) {
     if (crank_capture_valid) {
+        prev_crank_period_ticks = crank_period_ticks_val;
         crank_period_ticks_val = ticks_between(last_crank_capture, capture_time);
     }
     last_crank_capture = capture_time;
     crank_capture_valid = 1;
 
-    /* TODO: decide which cylinder's event (if any) is due at this edge
-     * and call injection_arm_cylinder() for it. Needs the real crank
-     * trigger wheel's tooth pattern (which tooth number this edge just
-     * was) and the real firing order - neither exists yet (engine-
-     * specific, not board-specific - see the project plan's own scope
-     * boundary). */
+    if (gap_detected(crank_period_ticks_val, prev_crank_period_ticks)) {
+        /* This edge is the first real tooth after the gap - the one
+         * angularly-known point on the wheel. */
+        tooth_index = 0u;
+        wheel_synced = 1u;
+        if (ENGINE_CYCLE_DEGREES == 720u) {
+            revolution = (uint8_t)(revolution ^ 1u);
+        }
+    } else if (wheel_synced) {
+        tooth_index = (uint8_t)(tooth_index + 1u);
+        if (tooth_index >= CRANK_REAL_TEETH) {
+            /* Should have seen the gap by now. Position is no longer
+             * trustworthy, so drop sync rather than keep firing on a
+             * count that has clearly drifted. */
+            wheel_synced = 0u;
+        }
+    }
+
+    /* Nothing may be armed until the wheel's absolute position is known
+     * AND - on a four-stroke - the cam has said which of the two
+     * revolutions this is. Firing on an unsynced wheel means firing at
+     * an unknown angle. */
+    if (!wheel_synced) {
+        return;
+    }
+    if ((ENGINE_CYCLE_DEGREES == 720u) && !cam_synced) {
+        return;
+    }
+
+    /* Crank angle now, measured from cylinder 1 compression TDC. The
+     * gap reference sits CRANK_GAP_TO_TDC_DEG before that TDC, so
+     * counting forward from the reference and subtracting that offset
+     * gives the angle past TDC. */
+    uint32_t from_ref  = (uint32_t)tooth_index * CRANK_DEGREES_PER_TOOTH;
+    uint32_t cycle_pos = ((uint32_t)revolution * 360u + from_ref
+                          + ENGINE_CYCLE_DEGREES - CRANK_GAP_TO_TDC_DEG)
+                         % ENGINE_CYCLE_DEGREES;
+
+    /* Arm whichever cylinder comes due one lead-window from here. The
+     * window is half a tooth wide on either side so exactly one tooth
+     * can match, whatever the wheel resolution. */
+    uint32_t target = (cycle_pos + ARM_LEAD_DEG) % ENGINE_CYCLE_DEGREES;
+    for (uint8_t i = 0u; i < ENGINE_CYLINDERS; i++) {
+        uint32_t fire_at = fire_angle_for_order_index(i);
+        uint32_t delta   = (fire_at + ENGINE_CYCLE_DEGREES - target)
+                           % ENGINE_CYCLE_DEGREES;
+        if (delta < CRANK_DEGREES_PER_TOOTH) {
+            cylinder_event_t event;
+            event.cylinder       = (uint8_t)(firing_order[i] - 1u);
+            event.pulse_width_us = 0u;   /* set by the fuelling calculation */
+            event.dwell_us       = IGNITION_DWELL_US;
+            event.fire_angle_deg = (uint16_t)fire_at;
+            injection_arm_cylinder(&event);
+            break;   /* events are evenly spaced; at most one per tooth */
+        }
+    }
 }
 
 void cam1_capture_isr(uint32_t capture_time) {

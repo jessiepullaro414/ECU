@@ -28,6 +28,7 @@ WHAT IS CHECKED, and what deliberately is not:
 Run:  python tools/gen_engine_config.py
 """
 import os
+import re
 import sys
 
 try:
@@ -311,8 +312,274 @@ def main():
     print(f"  {cfg['fuel']['displacement_cc']} cc, "
           f"{cfg['fuel']['injector_cc_per_min']} cc/min injectors, "
           f"target AFR {cfg['fuel']['target_afr_x10'] / 10:.1f}")
+    checked = validate_sensors(cfg)
+    sensors = cfg["sensor"]
+    kinds = {}
+    for sen in sensors.values():
+        kinds[sen["type"]] = kinds.get(sen["type"], 0) + 1
+    print(f"  {len(sensors)} analog sensors ("
+          + ", ".join(f"{n} {k}" for k, n in sorted(kinds.items())) + ")"
+          + f", {len(cfg.get('curve', {}))} shared curve(s)")
+    if checked:
+        print(f"  {checked} divider resistor(s) cross-checked against "
+              f"ecu-pcb/build_schematic.py")
+    else:
+        print("  divider cross-check SKIPPED (ecu-pcb not found beside this "
+              "project) - values in engine.toml are unverified against the board")
+    sensor_out = emit_sensors(cfg)
     print("Config valid. Wrote " + OUT)
+    print("             and " + sensor_out)
 
+
+
+# =====================================================================
+# Analog sensors
+# =====================================================================
+# One descriptor table beats one .c/.h pair per sensor: the two old
+# drivers (clt_sensor, iat_sensor) were 405 lines that differed in a
+# pull-up value, a lookup table, and the prefix on every identifier,
+# while eight other analog channels had no conversion at all.
+
+SENSOR_H = os.path.join(HERE, "inc", "sensor_defs.h")
+
+# Where the board's own resistor values live, so config and schematic
+# cannot drift apart silently.
+SCHEMATIC = os.path.join(HERE, "..", "ecu-pcb", "build_schematic.py")
+
+
+def _r_value(token):
+    """'4.7k' -> 4700.0, '1k 1%' -> 1000.0, '68k' -> 68000.0, '499R' ->
+    499.0. Understands the infix form (4k7) too."""
+    m = re.match(r"^(\d+)([kKMR])(\d+)$", token)
+    if m:
+        mult = {"k": 1e3, "K": 1e3, "M": 1e6, "R": 1.0}[m.group(2)]
+        return float(f"{m.group(1)}.{m.group(3)}") * mult
+    m = re.match(r"^([\d.]+)([kKMR]?)$", token)
+    if not m:
+        return None
+    mult = {"k": 1e3, "K": 1e3, "M": 1e6, "R": 1.0, "": 1.0}[m.group(2)]
+    return float(m.group(1)) * mult
+
+
+def schematic_resistors():
+    """Reference designator -> ohms, read straight out of the PCB
+    project's own schematic generator. Returns {} if that project is not
+    beside this one, so the firmware still builds standalone."""
+    try:
+        with open(SCHEMATIC, encoding="utf-8") as fh:
+            src = fh.read()
+    except OSError:
+        return {}
+    out = {}
+    for m in re.finditer(r'place\(f"\{LIB\}:\w+", "(R\d+)", "([^"]*)"', src):
+        ref, desc = m.groups()
+        val = _r_value(desc.split()[0])
+        if val is not None:
+            out[ref] = val
+    return out
+
+
+def validate_sensors(cfg):
+    adc = cfg["adc"]
+    vref, full = adc["vref_mv"], adc["max_counts"]
+    curves = cfg.get("curve", {})
+    board = schematic_resistors()
+    checked = 0
+
+    for name, curve in curves.items():
+        pts = curve["points"]
+        if len(pts) < 2:
+            raise ConfigError(f"curve.{name} needs at least 2 points")
+        # Descending resistance == ascending temperature. The lookup
+        # walks it assuming that; a mis-ordered curve would interpolate
+        # between the wrong pair and read plausibly, but wrong.
+        for (r0, t0), (r1, t1) in zip(pts, pts[1:]):
+            if r1 >= r0:
+                raise ConfigError(
+                    f"curve.{name}: resistance must strictly DESCEND, "
+                    f"got {r0} then {r1}")
+            if t1 <= t0:
+                raise ConfigError(
+                    f"curve.{name}: temperature must strictly ASCEND, "
+                    f"got {t0} then {t1} (hundredths of a degree C)")
+
+    for name, sen in sorted(cfg["sensor"].items()):
+        kind = sen["type"]
+        if kind not in ("linear", "voltage", "thermistor"):
+            raise ConfigError(
+                f"sensor.{name}.type = '{kind}', expected linear, voltage "
+                f"or thermistor")
+
+        # --- the divider, and the check that matters most -------------
+        div = sen.get("divider")
+        if div:
+            rt, rb = div["r_top"], div["r_bottom"]
+            if rt <= 0 or rb <= 0:
+                raise ConfigError(f"sensor.{name}: divider resistors must be positive")
+            ratio = rb / (rt + rb)
+
+            # Cross-check against the board itself.
+            for leg, ref in sorted(sen.get("refs", {}).items()):
+                if leg not in ("r_top", "r_bottom") or ref not in board:
+                    continue
+                want, got = float(div[leg]), board[ref]
+                if abs(want - got) > 0.5:
+                    raise ConfigError(
+                        f"sensor.{name}.divider.{leg} says {want:g} ohm but "
+                        f"{ref} on the board is {got:g} ohm "
+                        f"(ecu-pcb/build_schematic.py). One of the two is "
+                        f"stale - the firmware and the board must agree.")
+                checked += 1
+        else:
+            ratio = 1.0
+
+        if kind == "thermistor":
+            if sen["curve"] not in curves:
+                raise ConfigError(
+                    f"sensor.{name}.curve = '{sen['curve']}' has no matching "
+                    f"[curve.{sen['curve']}] section")
+            if sen["pullup_ohms"] <= 0:
+                raise ConfigError(f"sensor.{name}.pullup_ohms must be positive")
+            if div:
+                raise ConfigError(
+                    f"sensor.{name} is a thermistor AND has a divider. The "
+                    f"pull-up already IS the top half of the divider; adding "
+                    f"another would need a different equation than the one "
+                    f"sensor.c implements.")
+            continue
+
+        # --- linear / voltage: derive full-scale counts ---------------
+        if kind == "voltage":
+            # The divider alone sets the ceiling: the input voltage that
+            # lands exactly on the ADC reference.
+            supply_mv = vref / ratio
+            sen["_at_zero"], sen["_at_full"] = 0, int(round(supply_mv))
+            sen["_unit"] = "mV"
+        else:
+            supply_mv = float(sen["supply_mv"])
+            sen["_at_zero"], sen["_at_full"] = sen["at_zero"], sen["at_full"]
+            sen["_unit"] = sen.get("unit", "")
+
+        pin_mv = supply_mv * ratio
+        if pin_mv > vref + 0.5:
+            # Spell out the no-divider case separately. It is the most
+            # likely way to hit this and the most dangerous, so it must
+            # not be described as a badly-chosen divider.
+            via = (f"a {div['r_top']:g}/{div['r_bottom']:g} divider" if div
+                   else "NO DIVIDER AT ALL - it is wired straight to the pin")
+            raise ConfigError(
+                f"sensor.{name}: a {supply_mv:g} mV sensor through "
+                f"{via} puts "
+                f"{pin_mv:.0f} mV on a pin referenced to {vref} mV. Everything "
+                f"above the reference converts to full scale, so the top "
+                f"{100 * (1 - vref / pin_mv):.0f}% of this sensor's range "
+                f"would be unreadable. Fit a divider that keeps full scale "
+                f"under {vref} mV.")
+
+        # Divide by the number of STEPS, not the maximum code: the data
+        # sheet's own Figure 22 defines "1 LSB ideal = AVDD / 4096" for
+        # the 12-bit ADC_1, so a pin at exactly Vref lands on code 4096,
+        # which the converter reports as its top code 4095. Using
+        # max_counts here instead would bias every reading by one code -
+        # negligible against a +/-6 LSB TUE, but wrong for a number this
+        # file exists to derive rather than guess.
+        counts = min(full, int(round((full + 1) * pin_mv / vref)))
+        if counts < 1:
+            raise ConfigError(f"sensor.{name}: full scale lands below 1 ADC count")
+        sen["_counts_at_full"] = counts
+        # How much of the ADC's range this channel actually uses. Not an
+        # error, but worth saying out loud - a channel using a third of
+        # the range is throwing away resolution for no reason.
+        sen["_use_pct"] = 100.0 * counts / full
+
+    return checked
+
+
+def emit_sensors(cfg):
+    adc = cfg["adc"]
+    curves = cfg.get("curve", {})
+    names = sorted(cfg["sensor"])
+
+    out = []
+    out.append("/* GENERATED by tools/gen_engine_config.py from")
+    out.append(" * config/engine.toml - do not edit by hand.")
+    out.append(" *")
+    out.append(" * Analog sensor descriptors. src/sensor.c walks this table with")
+    out.append(" * three conversion kernels; adding a sensor is a config edit.")
+    out.append(" *")
+    out.append(" * Every full-scale count below is DERIVED from the real divider")
+    out.append(" * resistors, never typed in, and every divider was cross-checked")
+    out.append(" * against ecu-pcb/build_schematic.py at generation time. */")
+    out.append("#ifndef SENSOR_DEFS_H")
+    out.append("#define SENSOR_DEFS_H")
+    out.append("")
+    out.append("#include <stdint.h>")
+    out.append("")
+    out.append(f"#define ADC_VREF_MV     {adc['vref_mv']}u")
+    out.append(f"#define ADC_MAX_COUNTS  {adc['max_counts']}u")
+    out.append("")
+
+    # --- curves -------------------------------------------------------
+    out.append("/* Resistance (ohms) -> temperature (hundredths of a degree C),")
+    out.append(" * resistance descending. */")
+    out.append("typedef struct { uint32_t ohms; int16_t centi_c; } curve_point_t;")
+    out.append("")
+    for cname, curve in sorted(curves.items()):
+        pts = curve["points"]
+        out.append(f"#define CURVE_{cname.upper()}_COUNT {len(pts)}u")
+        out.append(f"static const curve_point_t CURVE_{cname.upper()}"
+                   f"[CURVE_{cname.upper()}_COUNT] = {{")
+        for r, t in pts:
+            out.append(f"    {{ {r:>7d}u, {t:>6d} }},")
+        out.append("};")
+        out.append("")
+
+    # --- descriptors --------------------------------------------------
+    out.append("typedef enum {")
+    out.append("    SENSOR_KIND_LINEAR = 0,")
+    out.append("    SENSOR_KIND_VOLTAGE,")
+    out.append("    SENSOR_KIND_THERMISTOR")
+    out.append("} sensor_kind_t;")
+    out.append("")
+    out.append("typedef struct {")
+    out.append("    const char         *name;")
+    out.append("    sensor_kind_t       kind;")
+    out.append("    /* linear/voltage: engineering value at 0 counts and at")
+    out.append("     * counts_at_full, which is derived from the divider. */")
+    out.append("    int32_t             at_zero;")
+    out.append("    int32_t             at_full;")
+    out.append("    uint16_t            counts_at_full;")
+    out.append("    /* thermistor: pull-up and the curve to walk. */")
+    out.append("    uint32_t            pullup_ohms;")
+    out.append("    const curve_point_t *curve;")
+    out.append("    uint8_t             curve_count;")
+    out.append("} sensor_def_t;")
+    out.append("")
+    out.append("typedef enum {")
+    for n in names:
+        out.append(f"    SENSOR_{n.upper()},")
+    out.append("    SENSOR_COUNT")
+    out.append("} sensor_id_t;")
+    out.append("")
+    out.append("static const sensor_def_t SENSOR_DEFS[SENSOR_COUNT] = {")
+    for n in names:
+        sen = cfg["sensor"][n]
+        if sen["type"] == "thermistor":
+            cu = sen["curve"].upper()
+            out.append(f"    /* {n} */ {{ \"{n}\", SENSOR_KIND_THERMISTOR, 0, 0, 0,")
+            out.append(f"        {sen['pullup_ohms']}u, CURVE_{cu}, CURVE_{cu}_COUNT }},")
+        else:
+            kind = "SENSOR_KIND_VOLTAGE" if sen["type"] == "voltage" else "SENSOR_KIND_LINEAR"
+            out.append(f"    /* {n:<5} {sen['_unit']:>6}, uses {sen['_use_pct']:.0f}% of ADC range */")
+            out.append(f"    {{ \"{n}\", {kind}, {sen['_at_zero']}, {sen['_at_full']}, "
+                       f"{sen['_counts_at_full']}u, 0u, 0, 0 }},")
+    out.append("};")
+    out.append("")
+    out.append("#endif /* SENSOR_DEFS_H */")
+
+    with open(SENSOR_H, "w", encoding="utf-8") as f:
+        f.write("\n".join(out) + "\n")
+    return SENSOR_H
 
 if __name__ == "__main__":
     main()

@@ -569,8 +569,10 @@ explicit rather than blurred.
   intentional distinction, not an oversight. `SENSOR_IIR_SHIFT`'s
   specific time constant isn't tuned against a real running engine yet
   (can't be, until one exists) — same scope boundary as VE tables.
-- **Real CLT (coolant temperature) sensor driver** ([`inc/clt_sensor.h`](inc/clt_sensor.h),
-  [`src/clt_sensor.c`](src/clt_sensor.c)) — the board's CLT sensor was
+- **Real CLT (coolant temperature) sensor** — *the driver has since been
+  folded into the generic sensor table (see "Analog sensors" below); the
+  part research below is unchanged and its curve now lives in
+  `config/engine.toml` as `[curve.gm_thermistor]`.* The board's CLT sensor was
   swapped to a real GM-style resistive sending unit (DIYAutoTune's
   "GM Closed Element CLT/Oil Temperature Sensor", the same real part/
   curve the sibling [thermo-pcb](https://github.com/jessiepullaro414/Thermo)
@@ -582,7 +584,8 @@ explicit rather than blurred.
   a real approximation error (the two segments' own local Betas differ
   by ~8%, confirmed by computing both) — so a piecewise-Beta model was
   fit per real segment and used to derive a 14-row lookup table at
-  design time (shown in `clt_sensor.c`'s own derivation comment), with
+  design time (the derivation is preserved in
+  `ecu-pcb/build_schematic.py` above R24/R25), with
   plain integer linear interpolation at runtime, no floating point,
   matching every other driver here. Readings outside the real calibrated
   range are clamped, not extrapolated (no real data exists past -40°F
@@ -596,9 +599,9 @@ explicit rather than blurred.
   wired into engine-control logic (warm-up enrichment) — that's real
   engine-specific tuning data, same "needs a running engine" boundary as
   the VE/dwell tables, see `injection.h`'s own note.
-- **Real IAT (intake air temperature) sensor driver**
-  ([`inc/iat_sensor.h`](inc/iat_sensor.h), [`src/iat_sensor.c`](src/iat_sensor.c))
-  — same session, same real part swap for the board's IAT sensor
+- **Real IAT (intake air temperature) sensor** — *same note as CLT: the
+  driver is now the generic sensor table, the research below stands.*
+  Same session, same real part swap for the board's IAT sensor
   (DIYAutoTune's "GM Open Element IAT Temperature Sensor"). Real, honest
   discrepancy found and resolved while sourcing it, not glossed over:
   the IAT product page's own published 3-point curve shares its first
@@ -615,9 +618,9 @@ explicit rather than blurred.
   real thermistor, versus CLT's own internally-consistent ~8% spread.
   Conclusion: genuinely the same underlying GM-pattern thermistor
   element as CLT, different physical package (open element for air vs.
-  closed/NPT for liquid) — `iat_sensor.c` reuses CLT's own
+  closed/NPT for liquid) — IAT reuses CLT's own
   already-cross-checked curve rather than the IAT page's likely-
-  erroneous 146°F figure (kept, separately, as `IAT_RATED_MAX_TENTHF` —
+  erroneous 146°F figure (kept, separately, as their rated maximum —
   DIYAutoTune's real stated max operating temp for this specific
   package, an honest fact worth keeping even though it's not used as a
   second clamp). R24=4.22kΩ (E96), deliberately different sizing from
@@ -1003,6 +1006,103 @@ from TPS rate of change, closed-loop trim from the wideband O2
 controllers, and battery-voltage correction of injector dead time (the
 board has the VBATT channel precisely for that; the single dead-time
 figure in the config is a placeholder for the table).
+
+## Analog sensors
+
+Every analog channel is described in `config/engine.toml` and converted
+by one table-driven module (`inc/sensor.h`, `src/sensor.c`) with three
+kernels — `linear`, `voltage`, `thermistor`. Adding a sensor is a config
+edit, not a new `.c`/`.h` pair.
+
+This replaced `clt_sensor.{c,h}` and `iat_sensor.{c,h}`: **405 lines
+that differed in a pull-up value, a lookup table, and the prefix on
+every identifier.** Meanwhile eight channels — TPS, OILP, FUELP,
+APP1/APP2, TPS1/TPS2, VBATT — had no conversion at all and were still
+raw ADC counts in the main loop, each of which would have wanted its own
+file pair. The pattern did not scale. All eleven channels now report
+engineering units.
+
+Four things this buys beyond tidiness, and they are the actual reason to
+do it:
+
+**The divider stops being a magic number.** Each channel names the real
+resistors in front of it and the generator computes where full scale
+lands in ADC counts. `MAP_ADC_AT_MAX = 3103` used to be typed in by hand
+and would have gone stale the moment the board changed. The generator
+now derives it — and derives it *correctly*: the divisor is 4096, not
+4095, because the data sheet's Figure 22 defines `1 LSB ideal =
+AVDD / 4096`. Using the maximum code instead would bias every reading by
+one count. Negligible against a ±6 LSB TUE, but wrong for a number whose
+whole purpose is being derived rather than guessed.
+
+**It cross-checks the board.** The generator reads
+`ecu-pcb/build_schematic.py` and compares every declared resistor against
+the real reference designator — 18 of them at present. Config and board
+cannot drift apart silently:
+
+```
+sensor.map.divider.r_bottom says 10000 ohm but R94 on the board is
+4700 ohm (ecu-pcb/build_schematic.py). One of the two is stale - the
+firmware and the board must agree.
+```
+
+If `ecu-pcb` isn't beside this project the check is skipped and says so,
+so the firmware still builds standalone.
+
+**It refuses a divider that would clip.** This is not hypothetical — it
+is the bug this board actually shipped, where eight 5 V sensors fed a
+3.3 V ADC through nothing but an RC filter and MAP stopped reading at
+~73 kPa of its 105 kPa range. That configuration is now unrepresentable:
+
+```
+sensor.map: a 5000 mV sensor through NO DIVIDER AT ALL - it is wired
+straight to the pin puts 5000 mV on a pin referenced to 3300 mV.
+Everything above the reference converts to full scale, so the top 34%
+of this sensor's range would be unreadable.
+```
+
+**One unit convention.** Everything is hundredths of a degree Celsius.
+The old drivers worked in tenths of a degree *Fahrenheit* while the EGT
+path worked in centi-Celsius, which put a `(tenthF - 320) * 50 / 9`
+conversion in the middle of the fuel calculation. That is gone.
+
+### One curve, two sensors
+
+CLT and IAT share a single `[curve.gm_thermistor]` rather than carrying
+duplicate tables, and that is a finding rather than a convenience.
+DIYAutoTune's IAT page publishes a third curve point (146 °F at 177 Ω)
+that contradicts the CLT page (210.2 °F at the same 177 Ω) while the
+first two points are identical. Two different sensors cannot both be
+right about that. The IAT page's own text calls the product a
+"closed-element sensor" while selling it as open-element — leftover copy
+from the CLT page — and taking 146 °F at face value implies a
+per-segment Beta more than twice CLT's own over the shared segment,
+physically implausible for one thermistor. Conclusion: the same GM
+element in two packages. The config structure now says so directly.
+DIYAutoTune's 146 °F is kept as their stated *maximum rated* temperature
+for the open-element part, which is a real and different fact.
+
+### What is deliberately not in the table
+
+EGT is a thermocouple behind an SPI ADC needing cold-junction
+compensation and a NIST ITS-90 polynomial; knock is a raw AC signal
+wanting a windowed transform, not a scalar conversion. Both stay
+bespoke — forcing either in would make the table lie about what it can
+do.
+
+**The throttle, pedal and pressure ranges are placeholders**, flagged as
+such in the config the same way the VE table is. A real TPS/APP does not
+swing the full 0–5 V (typically ~0.5–4.5 V) and production practice is to
+*learn* the closed and wide-open endpoints rather than trust a datasheet;
+no specific oil or fuel pressure sender has been chosen. Those channels
+report something meaningful now, but none of them is a calibration.
+
+Verified on the host against the drivers they replaced: thermistor
+resistance is bit-identical, temperature agrees within **0.04 °C** (pure
+rounding of the old Fahrenheit curve), and MAP reproduces the retired
+`fuel_map_kpa_from_adc()` exactly. VBATT reads 14.02 V at a plausible
+charging count. Open circuit, bad channel id, and resistance-on-a-
+non-thermistor all return their documented sentinels.
 
 ## Boot and startup
 

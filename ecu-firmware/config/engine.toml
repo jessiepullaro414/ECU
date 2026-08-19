@@ -175,3 +175,209 @@ table = [
   [ 62, 70, 78, 83, 86, 85, 80, 72 ],   #  80 kPa - part throttle
   [ 66, 75, 84, 90, 94, 93, 88, 80 ],   # 100 kPa - wide open throttle
 ]
+
+# =====================================================================
+# ANALOG SENSORS
+# =====================================================================
+# Every analog channel is described here rather than in its own C file.
+# tools/gen_engine_config.py turns these into a descriptor table that
+# src/sensor.c walks with three small conversion kernels, so adding a
+# sensor is a config edit, not a new .c/.h pair.
+#
+# THE DIVIDER IS DESCRIBED, NOT PRE-COMPUTED. Each channel names the
+# real resistors in front of it, and the generator works out where full
+# scale lands in ADC counts. That number used to be typed in by hand
+# (map_sensor.adc_counts_at_max = 3103) and would silently go stale the
+# moment the board changed - which is exactly the class of bug that put
+# eight 5 V sensors into a 3.3 V ADC with no divider at all. The
+# generator now also refuses any divider whose full scale sits above the
+# ADC reference, so that specific mistake cannot be described here.
+#
+# The generator cross-checks these resistor values against
+# ../ecu-pcb/build_schematic.py, so config and board cannot drift apart
+# silently.
+#
+# Three kernels:
+#   linear     - ratiometric sensor: output swings 0..supply_v and maps
+#                linearly onto an engineering range.
+#   voltage    - direct voltage measurement through a divider, reported
+#                in millivolts. No sensor supply involved.
+#   thermistor - NTC element as the bottom half of a divider against a
+#                fixed pull-up, then a resistance -> temperature curve.
+#
+# EGT and knock are deliberately NOT here. EGT is a thermocouple behind
+# an SPI ADC needing cold-junction compensation and a NIST polynomial
+# (ads1118.h); knock is a raw AC signal wanting a windowed transform,
+# not a scalar conversion. Forcing either into this table would make the
+# table lie about what it can do.
+#
+# All temperatures are hundredths of a degree CELSIUS, matching the EGT
+# path. The previous CLT/IAT drivers worked in tenths of a degree
+# Fahrenheit, which meant a unit conversion in the middle of the fuel
+# calculation - one convention removes it.
+
+[adc]
+# The ADC reference is VDD_HV_ADC0/1, which this board runs at 3.3 V
+# (ecu-pcb, "Power domains"), and ADC_1 is 12-bit.
+vref_mv   = 3300
+max_counts = 4095
+
+# --- Named curves ----------------------------------------------------
+# Shared so a curve measured once can back several channels.
+
+[curve.gm_thermistor]
+# REAL PART: DIYAutoTune GM-pattern NTC thermistor element, used by both
+# the closed-element CLT sending unit and the open-element IAT sensor.
+#
+# Rows marked ANCHOR are DIYAutoTune's own published data; every other
+# row was derived from those by per-segment Beta interpolation (the
+# derivation lived in the old src/clt_sensor.c and is preserved in
+# ecu-pcb/build_schematic.py above R24/R25).
+#
+# REAL DISCREPANCY, RESOLVED RATHER THAN GLOSSED OVER - and it is the
+# reason ONE curve backs BOTH sensors. DIYAutoTune's IAT page publishes
+# -40F=100700, 87F=2238, 146F=177; the first two are identical to the
+# CLT curve, but the third gives a different TEMPERATURE for the same
+# 177 ohm reading (146F vs the CLT page's 210.2F). Two genuinely
+# different sensors cannot both be right about that. Evidence it is
+# copy-paste contamination on the IAT page, not a real second curve:
+#   1. That page's own description calls the product a "closed-element
+#      sensor" while the product is titled open-element - leftover text
+#      from the CLT page.
+#   2. Taking 146F at face value implies a per-segment Beta more than
+#      twice CLT's own over the shared -40..87F segment (~7900K vs
+#      ~3800K), physically implausible for one thermistor, against
+#      CLT's internally consistent ~8% segment-to-segment spread.
+# Conclusion: the same underlying GM-pattern element in two different
+# packages. DIYAutoTune's 146F is not discarded - it is kept as their
+# stated MAX RATED temperature for the open-element part, which is a
+# real and different fact from a curve point.
+#
+# Ohms, then temperature in hundredths of a degree C. Resistance must
+# descend (temperature ascending); the generator checks it.
+points = [
+  [ 100700, -4000 ],   # ANCHOR: -40.0 F
+  [  47600, -2889 ],
+  [  24000, -1778 ],
+  [  12800,  -667 ],
+  [   7190,   444 ],
+  [   4220,  1556 ],
+  [   2238,  3000 ],   # ANCHOR: 86.0 F
+  [   1590,  3778 ],
+  [   1000,  4889 ],
+  [    653,  6000 ],
+  [    437,  7111 ],
+  [    300,  8222 ],
+  [    210,  9333 ],
+  [    177,  9900 ],   # ANCHOR: 210.2 F
+]
+
+# --- Channels --------------------------------------------------------
+# `divider` names the real board resistors between the sensor and the
+# ADC pin. Omit it for a channel wired straight to the pin.
+
+[sensor.clt]
+type        = "thermistor"
+curve       = "gm_thermistor"
+pullup_ohms = 1000          # R25, to +3V3
+refs        = { pullup = "R25" }
+
+[sensor.iat]
+type        = "thermistor"
+curve       = "gm_thermistor"
+pullup_ohms = 4220          # R24, to +3V3
+refs        = { pullup = "R24" }
+
+[sensor.map]
+# 1-bar MAP. Replace min/max for a boost sensor (a 2.5-bar part is
+# typically 10 and 250) - nothing else needs to change.
+type      = "linear"
+supply_mv = 5000
+at_zero   = 10              # kPa at 0 V
+at_full   = 105             # kPa at supply
+unit      = "kPa"
+divider   = { r_top = 4700, r_bottom = 4700 }
+refs      = { r_top = "R22", r_bottom = "R94" }
+
+[sensor.vbatt]
+# Direct battery-rail measurement, not a sensor - reports millivolts.
+# The divider alone sets the measurable ceiling: 3.3 V x 78k/10k, so
+# about 25.7 V. Above that it clamps, which is well past any charging
+# voltage and is what the TVS upstream is for.
+type    = "voltage"
+divider = { r_top = 68000, r_bottom = 10000 }
+refs    = { r_top = "R48", r_bottom = "R49" }
+
+# --- Throttle and pedal ----------------------------------------------
+# PLACEHOLDER RANGES. A real TPS/APP does not swing the full 0-5 V; it
+# typically spans about 0.5-4.5 V, and production practice is to LEARN
+# the closed and wide-open endpoints rather than trust a datasheet. The
+# 0-100% mapping below is a starting point so these channels report
+# something meaningful, not a calibration.
+[sensor.tps]
+type      = "linear"
+supply_mv = 5000
+at_zero   = 0
+at_full   = 10000           # hundredths of a percent
+unit      = "0.01%"
+divider   = { r_top = 4700, r_bottom = 4700 }
+refs      = { r_top = "R23", r_bottom = "R95" }
+
+[sensor.tps1]
+type      = "linear"
+supply_mv = 5000
+at_zero   = 0
+at_full   = 10000
+unit      = "0.01%"
+divider   = { r_top = 4700, r_bottom = 4700 }
+refs      = { r_top = "R89", r_bottom = "R100" }
+
+[sensor.tps2]
+type      = "linear"
+supply_mv = 5000
+at_zero   = 0
+at_full   = 10000
+unit      = "0.01%"
+divider   = { r_top = 4700, r_bottom = 4700 }
+refs      = { r_top = "R90", r_bottom = "R101" }
+
+[sensor.app1]
+type      = "linear"
+supply_mv = 5000
+at_zero   = 0
+at_full   = 10000
+unit      = "0.01%"
+divider   = { r_top = 4700, r_bottom = 4700 }
+refs      = { r_top = "R87", r_bottom = "R98" }
+
+[sensor.app2]
+type      = "linear"
+supply_mv = 5000
+at_zero   = 0
+at_full   = 10000
+unit      = "0.01%"
+divider   = { r_top = 4700, r_bottom = 4700 }
+refs      = { r_top = "R88", r_bottom = "R99" }
+
+# --- Pressures -------------------------------------------------------
+# PLACEHOLDER RANGES - no specific sender has been chosen for either.
+# 0-1000 kPa (about 145 psi) covers common automotive oil and fuel
+# pressure senders, but the real part's own transfer function must
+# replace this before either reading is trusted for a protection cut.
+[sensor.oilp]
+type      = "linear"
+supply_mv = 5000
+at_zero   = 0
+at_full   = 1000
+unit      = "kPa"
+divider   = { r_top = 4700, r_bottom = 4700 }
+refs      = { r_top = "R53", r_bottom = "R96" }
+
+[sensor.fuelp]
+type      = "linear"
+supply_mv = 5000
+at_zero   = 0
+at_full   = 1000
+unit      = "kPa"
+divider   = { r_top = 4700, r_bottom = 4700 }
+refs      = { r_top = "R54", r_bottom = "R97" }

@@ -18,17 +18,6 @@
 /* 0 C in Kelvin, x100 to match the centi-degree inputs. */
 #define KELVIN_OFFSET_CENTI   27315
 
-uint16_t fuel_map_kpa_from_adc(uint16_t adc_counts) {
-    if (adc_counts >= MAP_ADC_AT_MAX) {
-        return (uint16_t)MAP_KPA_AT_MAX;
-    }
-    /* Linear between the two calibrated points. The sensor's minimum is
-     * at 0 counts by definition of a ratiometric output. */
-    uint32_t span = (uint32_t)MAP_KPA_AT_MAX - (uint32_t)MAP_KPA_AT_MIN;
-    return (uint16_t)((uint32_t)MAP_KPA_AT_MIN
-                      + (span * (uint32_t)adc_counts) / MAP_ADC_AT_MAX);
-}
-
 /* Finds the axis cell containing `value` and how far into it we are,
  * scaled to 0..FRAC_ONE. Returns the lower index; `frac` gets the
  * position within that interval. Clamping at both ends is deliberate:

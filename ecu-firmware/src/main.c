@@ -38,9 +38,8 @@
 #include "intc.h"
 #include "cj125.h"
 #include "swt.h"
-#include "clt_sensor.h"
+#include "sensor.h"
 #include "ads1118.h"
-#include "iat_sensor.h"
 #include "fuel.h"
 #include "engine_config.h"
 
@@ -433,11 +432,26 @@ static void update_tables(void) {
      * the load axis. TPS stays a real input for acceleration
      * enrichment, which is not implemented (fuel.h says why).
      *
-     * iat_temp_tenthF() works in tenths of a degree F; fuel.c wants
-     * hundredths of a degree C. C = (F-32)*5/9, so
-     * centiC = (tenthF - 320) * 50 / 9. */
-    int32_t iat_centiC = (((int32_t)iat_temp_tenthF(sensors.iat) - 320) * 50) / 9;
-    injection_set_fuel_inputs(fuel_map_kpa_from_adc(sensors.map), iat_centiC);
+     * Both conversions come off the same descriptor table now
+     * (sensor.h), in the same unit, so the Fahrenheit-to-Celsius step
+     * that used to sit in the middle of this function is gone.
+     *
+     * A failed IAT reading (open circuit) must not become a fuelling
+     * input: SENSOR_INVALID is INT32_MIN, which would look like an
+     * impossibly cold - and therefore impossibly dense - charge and
+     * command a huge pulse. fuel.c has its own floor, but relying on a
+     * downstream clamp to absorb a known-bad reading is the wrong
+     * place to handle it. 20 C is a neutral limp-home value; the point
+     * is that a broken sensor produces a mild error, not a rich one. */
+    int32_t iat_centiC = sensor_convert(SENSOR_IAT, sensors.iat);
+    if (iat_centiC == SENSOR_INVALID) {
+        iat_centiC = 2000;
+    }
+    int32_t map_kpa = sensor_convert(SENSOR_MAP, sensors.map);
+    if (map_kpa == SENSOR_INVALID) {
+        map_kpa = 0;
+    }
+    injection_set_fuel_inputs((uint16_t)map_kpa, iat_centiC);
 
     /* Still real and still not done, unchanged by the above: dwell
      * table, ignition timing table, closed-loop O2 trim, boost target

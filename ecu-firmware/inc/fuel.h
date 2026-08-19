@@ -42,11 +42,11 @@
 
 #include <stdint.h>
 
-/* Converts a raw MAP ADC count into kPa using the sensor's configured
- * linear transfer function. Clamps rather than extrapolating past the
- * calibrated ends - an out-of-range reading means a disconnected or
- * failed sensor, not a real pressure. */
-uint16_t fuel_map_kpa_from_adc(uint16_t adc_counts);
+/* The MAP counts -> kPa conversion used to live here. It moved to the
+ * generic sensor table (sensor.h): it was an ordinary linear
+ * ratiometric channel, and keeping a private copy of that arithmetic
+ * meant the divider it depends on was described in two places. Call
+ * sensor_convert(SENSOR_MAP, raw) instead. */
 
 /* Bilinear VE lookup, returning volumetric efficiency in percent.
  * Interpolates between the four surrounding table cells; clamps to the

@@ -98,6 +98,46 @@ emios_prescaler = 60
 # actually fills, and it is what the [ve] table below holds.
 # =====================================================================
 
+# --- Spark advance ---------------------------------------------------
+# Crank degrees BEFORE top dead centre to fire the spark. Same bilinear
+# interpolation and the same validation as the VE table, on its own
+# axes - fuel and spark are independent tables in every real ECU and
+# deserve to be tunable on different breakpoints.
+#
+# WHY THIS EXISTS AT ALL: without it every cylinder fires exactly AT
+# TDC, which is what this firmware did before this table. Combustion
+# takes real time, so the charge must be lit before TDC for peak
+# cylinder pressure to arrive just after it. Firing at TDC makes no
+# useful power and pushes the engine toward detonation.
+#
+# THIS IS A STARTING SHAPE, NOT A TUNED MAP - the same warning the VE
+# table carries, and it matters more here. It follows the general
+# behaviour of a naturally-aspirated engine: advance rises with RPM
+# (less time available per degree) and falls with load (higher cylinder
+# pressure burns faster and knocks sooner). It describes no particular
+# engine.
+#
+# OVER-ADVANCE IS HOW ENGINES GET HOLED. Too much advance fires the
+# charge while the piston is still rising against it, and the resulting
+# detonation destroys pistons and ring lands quickly and quietly. The
+# generator enforces a hard band on every cell, and separately checks
+# that the largest advance here still fits inside the scheduling window
+# - but neither check knows anything about YOUR engine's knock limit.
+# That comes from a dyno, a knock ear, or the knock sensors this board
+# already has.
+[ignition.advance]
+rpm_axis = [500, 1000, 1500, 2000, 3000, 4000, 5000, 6000]
+map_axis = [20, 40, 60, 80, 100]
+
+# One row per MAP breakpoint, one column per RPM breakpoint.
+table = [
+  [ 12, 20, 28, 34, 40, 44, 46, 46 ],   #  20 kPa - idle / overrun
+  [ 12, 20, 27, 32, 38, 42, 44, 44 ],   #  40 kPa - light cruise
+  [ 10, 18, 24, 28, 34, 38, 40, 40 ],   #  60 kPa - cruise
+  [ 10, 15, 20, 24, 29, 32, 34, 34 ],   #  80 kPa - part throttle
+  [  8, 12, 16, 20, 26, 30, 32, 32 ],   # 100 kPa - wide open throttle
+]
+
 [fuel]
 # Total engine displacement in cc. Divided by cylinder count to get the
 # swept volume of one cylinder.

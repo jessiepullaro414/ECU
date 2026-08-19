@@ -26,6 +26,7 @@
 #include "ecu_pins.h"
 #include "emios.h"
 #include "fuel.h"
+#include "ignition.h"
 
 typedef struct {
     uint32_t base;
@@ -297,7 +298,21 @@ void crank_capture_isr(uint32_t capture_time) {
                                               fuel_iat_centiC);
             event.pulse_width_us = (pw > 65535u) ? 65535u : (uint16_t)pw;
             event.dwell_us       = IGNITION_DWELL_US;
-            event.fire_angle_deg = (uint16_t)fire_at;
+
+            /* Spark advance, at last. fire_at is this cylinder's TDC;
+             * the spark belongs ADVANCE degrees before it. Until this
+             * existed every cylinder was scheduled to fire exactly at
+             * TDC, which makes no useful power and invites detonation.
+             *
+             * NOTE, and it is the honest limit of this change: the
+             * angle is computed and carried correctly, but the eMIOS
+             * output path cannot yet place a pulse AT an angle - see
+             * injection_arm_cylinder() and the README. Consuming this
+             * field is what that work unblocks. */
+            int16_t advance = ignition_advance_deg(injection_crank_rpm(),
+                                                   fuel_map_kpa);
+            event.fire_angle_deg = ignition_spark_angle((uint16_t)fire_at,
+                                                        advance);
             injection_arm_cylinder(&event);
             break;   /* events are evenly spaced; at most one per tooth */
         }

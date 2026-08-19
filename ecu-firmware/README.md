@@ -1007,6 +1007,89 @@ controllers, and battery-voltage correction of injector dead time (the
 board has the VBATT channel precisely for that; the single dead-time
 figure in the config is a placeholder for the table).
 
+## Ignition timing
+
+Spark advance lives in `[ignition.advance]` in `config/engine.toml` as
+an RPM x MAP table on its own axes, interpolated by the same
+`table2d_lookup()` the VE table uses. `inc/ignition.h` / `src/ignition.c`
+turn an operating point into an advance and an advance into a crank
+angle.
+
+**Before this, every cylinder fired exactly at TDC.**
+`fire_angle_for_order_index()` returned the cylinder's nominal TDC angle
+straight from the firing order and no advance was ever applied.
+Combustion takes real time, so the charge has to be lit *before* TDC for
+peak cylinder pressure to land just after it, where it can push. Firing
+at TDC makes no useful power and pushes the engine toward detonation.
+
+The table gets its own axes rather than borrowing the VE table's,
+because fuel and spark are tuned against different breakpoints in every
+real ECU. Adding it also collapsed a duplicate: the bilinear
+interpolation was private to `fuel.c`, and a second copy would have been
+a second chance for the two tables to disagree about what "halfway
+between cells" means. It now lives once in `inc/table.h` / `src/table.c`,
+with both tables emitted as `int16_t` cells so one implementation serves
+both — spark advance can legitimately be **negative** (retarded past
+TDC, which real engines do while cranking), which an unsigned cell could
+not express.
+
+**Two guard rails, both verified by deliberately breaking the config:**
+
+A per-cell band, because over-advance is how pistons get holed:
+
+```
+ignition.advance.table[0][6] = 460 deg BTDC at 20 kPa / 5000 rpm
+is outside -20..60 deg BTDC - almost certainly a typo
+```
+
+And a check that the largest advance still fits the scheduling window.
+`crank_capture_isr()` arms a cylinder one firing interval before its
+TDC, and the spark happens *advance* degrees before that TDC — so an
+advance wider than the lead would need scheduling before its cylinder
+was ever armed. On a four-stroke eight the interval is 90 degrees and
+there is room; the check is reachable on short intervals, and a
+two-stroke eight is the honest example:
+
+```
+ignition.advance peaks at 46 deg BTDC but cylinders fire every 45 deg,
+which is also the scheduling lead. The spark would have to be scheduled
+before its cylinder was armed.
+```
+
+The shipped table is a **starting shape, not a tuned map** — the same
+warning the VE table carries, and it matters more here. Verified on the
+host: all 40 cells round-trip exactly, midpoints interpolate as
+expected, off-axis queries clamp to the corners, and the table's
+physical shape holds across every row and column (advance rises with
+RPM, falls with load). The angle wrap is checked too, since cylinder 1
+sits at angle 0 and is therefore the common case rather than a corner
+case: 26 degrees of advance on a 720-degree cycle gives a spark angle of
+**694**, not a negative number.
+
+### The output path is the real remaining gap
+
+**`fire_angle_deg` is computed correctly and still not consumed**, and
+finding out why turned up something bigger than a missing call.
+`emios_init_opwfmb_channel()` **is never called anywhere**. Only the
+three crank/cam *capture* channels are initialised
+(`emios_capture_init()`); all sixteen injector and ignition output
+channels are muxed to their eMIOS alternate function by SIUL2 but their
+unified channels are left in reset state, so `injection_arm_cylinder()`
+writes `EMIOS_B` on unconfigured channels. **Nothing would fire.**
+
+That is not a one-line fix, because the mode is also likely wrong.
+OPWFMB is periodic PWM — `A` is the period, `B` the pulse width — so it
+free-runs and emits a pulse every period regardless of crank position.
+Injection and ignition want a *one-shot pulse positioned at an angle*.
+The eMIOS mode built for that is OPWMB running against a shared counter
+bus, where `A` is the leading edge and `B` the trailing edge as
+positions on a continuously running counter, rewritten each cycle. That
+needs a real pass over the eMIOS chapter — counter bus selection, which
+channel drives the bus, and the mode-transition rules — before any of it
+is written down.
+
+Until then the advance is real, carried, and inert.
+
 ## Analog sensors
 
 Every analog channel is described in `config/engine.toml` and converted

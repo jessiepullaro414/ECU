@@ -3,6 +3,7 @@
  */
 #include "fuel.h"
 #include "engine_config.h"
+#include "table.h"
 
 /* Air's specific gas constant is 287.05 J/(kg K). The calculation wants
  * air mass in micrograms from kPa, cc and Kelvin:
@@ -18,57 +19,16 @@
 /* 0 C in Kelvin, x100 to match the centi-degree inputs. */
 #define KELVIN_OFFSET_CENTI   27315
 
-/* Finds the axis cell containing `value` and how far into it we are,
- * scaled to 0..FRAC_ONE. Returns the lower index; `frac` gets the
- * position within that interval. Clamping at both ends is deliberate:
- * running off the edge of the map should hold the edge value, not
- * extrapolate a VE the engine was never measured at. */
-#define FRAC_ONE  256
-
-static uint8_t axis_lookup(const uint16_t *axis, uint8_t count,
-                           uint16_t value, int32_t *frac) {
-    if (value <= axis[0]) {
-        *frac = 0;
-        return 0u;
-    }
-    if (value >= axis[count - 1u]) {
-        *frac = 0;
-        return (uint8_t)(count - 1u);
-    }
-    uint8_t i = 0u;
-    while (((uint8_t)(i + 1u) < count) && (value >= axis[i + 1u])) {
-        i++;
-    }
-    int32_t lo = (int32_t)axis[i];
-    int32_t hi = (int32_t)axis[i + 1u];
-    *frac = (((int32_t)value - lo) * FRAC_ONE) / (hi - lo);
-    return i;
-}
-
-/* One step of linear interpolation between two table cells. Signed
- * throughout: the difference between neighbouring cells is negative
- * wherever the VE curve falls off, and doing this in unsigned would
- * wrap on exactly the high-RPM cells that matter most. */
-static int32_t lerp(int32_t a, int32_t b, int32_t frac) {
-    return a + (((b - a) * frac) / FRAC_ONE);
-}
-
 uint8_t fuel_ve_lookup(uint16_t rpm, uint16_t map_kpa) {
-    int32_t rf, mf;
-    uint8_t ri = axis_lookup(VE_RPM_AXIS, (uint8_t)VE_RPM_COUNT, rpm, &rf);
-    uint8_t mi = axis_lookup(VE_MAP_AXIS, (uint8_t)VE_MAP_COUNT, map_kpa, &mf);
-
-    /* At the top of an axis the lookup returns the last index and a zero
-     * fraction, so pairing it with itself interpolates to that same
-     * value - no special case needed past this clamp. */
-    uint8_t ri2 = ((uint8_t)(ri + 1u) < VE_RPM_COUNT) ? (uint8_t)(ri + 1u) : ri;
-    uint8_t mi2 = ((uint8_t)(mi + 1u) < VE_MAP_COUNT) ? (uint8_t)(mi + 1u) : mi;
-
-    /* Bilinear: interpolate along RPM on both MAP rows, then between
-     * those two results along MAP. */
-    int32_t low  = lerp((int32_t)VE_TABLE[mi][ri],  (int32_t)VE_TABLE[mi][ri2],  rf);
-    int32_t high = lerp((int32_t)VE_TABLE[mi2][ri], (int32_t)VE_TABLE[mi2][ri2], rf);
-    return (uint8_t)lerp(low, high, mf);
+    /* The bilinear interpolation used to live here. It moved to
+     * table.c when the spark advance table arrived needing exactly the
+     * same lookup - a second copy would have been a second chance for
+     * the two tables to disagree about what "halfway between cells"
+     * means. Host-verified identical before and after the move. */
+    int32_t ve = table2d_lookup(VE_RPM_AXIS, (uint8_t)VE_RPM_COUNT,
+                                VE_MAP_AXIS, (uint8_t)VE_MAP_COUNT,
+                                &VE_TABLE[0][0], rpm, map_kpa);
+    return (uint8_t)ve;
 }
 
 uint32_t fuel_pulse_width_us(uint16_t rpm, uint16_t map_kpa, int32_t iat_centiC) {

@@ -132,35 +132,28 @@ def validate(cfg):
             f"map_sensor.adc_counts_at_max = {m['adc_counts_at_max']}, must be "
             f"1..4095 - the MCU ADC is 12-bit")
 
-    ve = cfg["ve"]
-    rpm, mapa, table = ve["rpm_axis"], ve["map_axis"], ve["table"]
+    validate_table2d(cfg["ve"], "ve", 10, 150, "%")
+    validate_table2d(cfg["ignition"]["advance"], "ignition.advance",
+                     -20, 60, "deg BTDC")
 
-    # Axes must ascend: the lookup walks them assuming that, and a
-    # mis-ordered axis would silently interpolate between the wrong cells.
-    for name, axis in (("rpm_axis", rpm), ("map_axis", mapa)):
-        if len(axis) < 2:
-            raise ConfigError(f"ve.{name} needs at least 2 breakpoints")
-        if any(b <= a for a, b in zip(axis, axis[1:])):
-            raise ConfigError(
-                f"ve.{name} must be strictly ascending, got {axis}")
-
-    if len(table) != len(mapa):
+    # The scheduling window has to be wide enough for the largest advance
+    # the table can command. crank_capture_isr() arms a cylinder one
+    # ARM_LEAD_DEG (== the firing interval) before its TDC, and the spark
+    # happens ADVANCE degrees BEFORE that TDC - so an advance larger than
+    # the lead would need to have been scheduled before the ISR ever
+    # looked at that cylinder. This bites hardest on engines with many
+    # cylinders, where the firing interval is small: a V12 has only 60
+    # degrees between firings, which a 46-degree advance plus coil dwell
+    # can genuinely exceed.
+    max_adv = max(max(r) for r in cfg["ignition"]["advance"]["table"])
+    interval = cfg["engine"]["cycle_degrees"] // cfg["engine"]["cylinders"]
+    if max_adv >= interval:
         raise ConfigError(
-            f"ve.table has {len(table)} rows but ve.map_axis has "
-            f"{len(mapa)} breakpoints - one row per MAP breakpoint")
-    for i, row in enumerate(table):
-        if len(row) != len(rpm):
-            raise ConfigError(
-                f"ve.table row {i} (MAP {mapa[i]} kPa) has {len(row)} entries "
-                f"but ve.rpm_axis has {len(rpm)} breakpoints")
-        for j, v in enumerate(row):
-            # A VE outside this range is far more likely a typo than a
-            # real engine. Catching it here beats discovering it as a
-            # lean cylinder at load.
-            if not (10 <= v <= 150):
-                raise ConfigError(
-                    f"ve.table[{i}][{j}] = {v}% at {mapa[i]} kPa / {rpm[j]} rpm "
-                    f"is outside 10..150% - almost certainly a typo")
+            f"ignition.advance peaks at {max_adv} deg BTDC but cylinders fire "
+            f"every {interval} deg, which is also the scheduling lead. The "
+            f"spark would have to be scheduled before its cylinder was armed. "
+            f"Reduce the advance, or widen the arming lead (ARM_LEAD_DEG in "
+            f"src/injection.c) and re-check the timing budget.")
 
     pre = tb["emios_prescaler"]
     if not (1 <= pre <= 256):
@@ -242,16 +235,14 @@ TEMPLATE = '''/*
 #define MAP_KPA_AT_MAX         {map_max}u
 #define MAP_ADC_AT_MAX         {map_counts}u
 
-/* ---- VE table ------------------------------------------------------
- * Rows are MAP breakpoints, columns RPM. Bilinearly interpolated.
- * A STARTING SHAPE, NOT A TUNED MAP - see config/engine.toml. */
-#define VE_RPM_COUNT   {rpm_count}u
-#define VE_MAP_COUNT   {map_count}u
+{ve_block}
 
-static const uint16_t VE_RPM_AXIS[VE_RPM_COUNT] = {{ {rpm_axis} }};
-static const uint16_t VE_MAP_AXIS[VE_MAP_COUNT] = {{ {map_axis} }};
-static const uint8_t  VE_TABLE[VE_MAP_COUNT][VE_RPM_COUNT] = {{
-{ve_rows}}};
+{spark_block}
+
+/* The largest advance the spark table can command, in crank degrees.
+ * The scheduling lead has to stay wider than this - the generator
+ * enforces that, this is here so the firmware can assert it too. */
+#define SPARK_ADVANCE_MAX_DEG  {spark_max}
 
 #endif /* ENGINE_CONFIG_H */
 '''
@@ -286,14 +277,20 @@ def main():
         map_min=cfg["map_sensor"]["kpa_at_min"],
         map_max=cfg["map_sensor"]["kpa_at_max"],
         map_counts=cfg["map_sensor"]["adc_counts_at_max"],
-        rpm_count=len(cfg["ve"]["rpm_axis"]),
-        map_count=len(cfg["ve"]["map_axis"]),
-        rpm_axis=", ".join(f"{v}u" for v in cfg["ve"]["rpm_axis"]),
-        map_axis=", ".join(f"{v}u" for v in cfg["ve"]["map_axis"]),
-        ve_rows="".join(
-            "    { " + ", ".join(f"{v:3d}u" for v in row) + " },"
-            + f"   /* {cfg['ve']['map_axis'][i]:>4d} kPa */\n"
-            for i, row in enumerate(cfg["ve"]["table"])),
+        ve_block=table2d_c(
+            cfg["ve"], "VE",
+            "/* ---- VE table --------------------------------------------------\n"
+            " * Rows are MAP breakpoints, columns RPM. Bilinearly interpolated\n"
+            " * by table2d_lookup() (table.h).\n"
+            " * A STARTING SHAPE, NOT A TUNED MAP - see config/engine.toml. */"),
+        spark_block=table2d_c(
+            cfg["ignition"]["advance"], "SPARK",
+            "/* ---- Spark advance ---------------------------------------------\n"
+            " * Crank degrees BEFORE top dead centre. Same shape and the same\n"
+            " * interpolation as the VE table, on its own axes.\n"
+            " * A STARTING SHAPE, NOT A TUNED MAP. Over-advance destroys\n"
+            " * pistons - see config/engine.toml. */"),
+        spark_max=max(max(r) for r in cfg["ignition"]["advance"]["table"]),
     )
     with open(OUT, "w", encoding="utf-8") as f:
         f.write(text)
@@ -309,6 +306,12 @@ def main():
     flat = [v for row in ve["table"] for v in row]
     print(f"  VE table {len(ve['map_axis'])} MAP x {len(ve['rpm_axis'])} RPM, "
           f"{min(flat)}-{max(flat)}%")
+    sp = cfg["ignition"]["advance"]
+    sflat = [v for row in sp["table"] for v in row]
+    interval = cfg["engine"]["cycle_degrees"] // cfg["engine"]["cylinders"]
+    print(f"  spark table {len(sp['map_axis'])} MAP x {len(sp['rpm_axis'])} RPM, "
+          f"{min(sflat)}-{max(sflat)} deg BTDC "
+          f"(peak fits the {interval} deg scheduling lead)")
     print(f"  {cfg['fuel']['displacement_cc']} cc, "
           f"{cfg['fuel']['injector_cc_per_min']} cc/min injectors, "
           f"target AFR {cfg['fuel']['target_afr_x10'] / 10:.1f}")
@@ -377,6 +380,65 @@ def schematic_resistors():
         if val is not None:
             out[ref] = val
     return out
+
+
+
+def validate_table2d(sect, label, lo, hi, unit):
+    """Shared checks for an RPM x MAP breakpoint table. Both the VE table
+    and the spark advance table are this shape, and getting either one
+    structurally wrong fails the same silent way - the lookup happily
+    interpolates between the wrong cells and returns a plausible number."""
+    rpm, mapa, table = sect["rpm_axis"], sect["map_axis"], sect["table"]
+
+    # Axes must ascend: the lookup walks them assuming that.
+    for aname, axis in (("rpm_axis", rpm), ("map_axis", mapa)):
+        if len(axis) < 2:
+            raise ConfigError(f"{label}.{aname} needs at least 2 breakpoints")
+        if any(b <= a for a, b in zip(axis, axis[1:])):
+            raise ConfigError(
+                f"{label}.{aname} must be strictly ascending, got {axis}")
+
+    if len(table) != len(mapa):
+        raise ConfigError(
+            f"{label}.table has {len(table)} rows but {label}.map_axis has "
+            f"{len(mapa)} breakpoints - one row per MAP breakpoint")
+    for i, row in enumerate(table):
+        if len(row) != len(rpm):
+            raise ConfigError(
+                f"{label}.table row {i} (MAP {mapa[i]} kPa) has {len(row)} "
+                f"entries but {label}.rpm_axis has {len(rpm)} breakpoints")
+        for j, v in enumerate(row):
+            # Out of this band is far more likely a typo than a real
+            # engine, and catching it here beats discovering it as a lean
+            # cylinder or a holed piston.
+            if not (lo <= v <= hi):
+                raise ConfigError(
+                    f"{label}.table[{i}][{j}] = {v} {unit} at {mapa[i]} kPa / "
+                    f"{rpm[j]} rpm is outside {lo}..{hi} {unit} - almost "
+                    f"certainly a typo")
+
+
+def table2d_c(sect, prefix, comment):
+    """Emits one RPM x MAP table as C. Cells are int16_t for both tables
+    so a single lookup in src/table.c can serve them - spark advance can
+    legitimately be negative (retarded past TDC), which an unsigned cell
+    could not express."""
+    rpm, mapa, table = sect["rpm_axis"], sect["map_axis"], sect["table"]
+    out = [comment,
+           f"#define {prefix}_RPM_COUNT   {len(rpm)}u",
+           f"#define {prefix}_MAP_COUNT   {len(mapa)}u",
+           "",
+           f"static const uint16_t {prefix}_RPM_AXIS[{prefix}_RPM_COUNT] = {{ "
+           + ", ".join(f"{v}u" for v in rpm) + " };",
+           f"static const uint16_t {prefix}_MAP_AXIS[{prefix}_MAP_COUNT] = {{ "
+           + ", ".join(f"{v}u" for v in mapa) + " };",
+           f"static const int16_t  {prefix}_TABLE[{prefix}_MAP_COUNT]"
+           f"[{prefix}_RPM_COUNT] = {{"]
+    for i, row in enumerate(table):
+        out.append("    { " + ", ".join(f"{v:4d}" for v in row)
+                   + f" }},   /* {mapa[i]:>4d} kPa */")
+    out.append("};")
+    return "\n".join(out)
 
 
 def validate_sensors(cfg):

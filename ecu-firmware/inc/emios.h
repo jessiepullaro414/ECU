@@ -104,6 +104,16 @@
 #define EMIOS_MODE_SAOC        0x03u
 #define EMIOS_MODE_IPWM        0x04u  /* Input Pulse Width Measurement */
 #define EMIOS_MODE_IPM         0x05u
+/* Counter bus modulus. MCB up mode counts 1..A1 inclusive, so with A1
+ * set to 0xFFFF the counter takes 65535 distinct values, not 65536 -
+ * one short of a clean 16-bit mask. Anything doing modular arithmetic
+ * on bus timestamps has to use THIS, not 0xFFFF+1, or it gains a tick
+ * every wrap. */
+#define EMIOS_COUNTER_MODULUS  65535u
+
+#define EMIOS_MODE_DAOC_FLAG_B 0x06u  /* Double Action Output Compare, FLAG on B match */
+#define EMIOS_MODE_DAOC_BOTH   0x07u  /* ... FLAG on both matches */
+#define EMIOS_MODE_MCB_UP      0x50u  /* Modulus Counter Buffered, up, internal clock */
 #define EMIOS_MODE_OPWFMB      0x58u  /* Output Pulse Width and Frequency Modulation Buffered - see note above */
 
 /*
@@ -145,6 +155,54 @@ void emios_set_pulse_width(uint32_t base, uint8_t channel, uint32_t pulse_ticks)
  * rather than writing the whole register in one go, so the divider is
  * never changed underneath a running counter. */
 void emios_init_timebase(uint32_t base, uint32_t divide_ratio);
+
+/* THE COUNTER BUS. Every timing function on this part - input capture
+ * and output compare alike - compares against a "counter bus", and a
+ * counter bus is nothing but one channel running a modulus counter and
+ * broadcasting its value. Counter bus A is the global one: Table 27-20
+ * confirms BSL = 00 selects it on ALL channels, and the feature list
+ * confirms it is driven by Unified Channel 23.
+ *
+ * Nothing drove it before this function existed, which meant the crank
+ * and cam capture channels were timestamping against a bus that never
+ * counted - every capture read the same value, so the measured tooth
+ * period was always zero and the engine could never sync.
+ *
+ * Putting captures and output compares on the SAME bus is what makes
+ * the whole scheme work: a timestamp taken at a crank tooth and a match
+ * value scheduled for an injector are then in one shared time base, so
+ * "fire N ticks after the tooth I just saw" is a plain addition.
+ *
+ * MCB counts 1..A1 inclusive (Section 27.4.4.1.1.8: "the MCB mode
+ * counts between 0x1 and A1 register value"), so the modulus is A1
+ * itself, NOT A1 + 1 - see EMIOS_COUNTER_MODULUS. The manual also warns
+ * the counter must already be inside that range at mode entry, so this
+ * seeds it rather than leaving it at its reset 0. */
+void emios_init_counter_bus(uint32_t base, uint8_t channel);
+
+/* Arms one output channel for angular event scheduling: DAOC against
+ * counter bus A, EDPOL = 1 so an A match drives the pin HIGH and a B
+ * match drives it LOW.
+ *
+ * Mode entry leaves the output at the COMPLEMENT of EDPOL - low - which
+ * is the safe state on this board: injectors closed, coils not
+ * charging. That is worth stating because the alternative would energise
+ * every coil the instant the firmware initialised. */
+void emios_init_output_channel(uint32_t base, uint8_t channel);
+
+/* Schedules one pulse: output goes high at `on_ticks` and low at
+ * `off_ticks`, both absolute values on counter bus A.
+ *
+ * DAOC is genuinely one-shot, which is exactly what an injector or a
+ * coil wants and is why this is not the periodic OPWFMB the channels
+ * were originally written for. Per Section 27.4.4.1.1.6 each comparator
+ * "is enabled only after the transfer to A1/B1 occurs and is disabled
+ * on the next match" - so writing here arms one pulse, it fires once,
+ * and the hardware disarms itself until the next crank event writes
+ * again. A free-running PWM would have kept pulsing regardless of where
+ * the crank was. */
+void emios_schedule_pulse(uint32_t base, uint8_t channel,
+                          uint32_t on_ticks, uint32_t off_ticks);
 
 /* Configure a channel for crank/cam edge capture (SAIC mode).
  * rising_edge: real, confirmed sense (Table 27-17's own field

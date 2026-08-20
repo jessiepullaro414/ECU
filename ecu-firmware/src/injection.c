@@ -65,7 +65,26 @@ static const emios_channel_t ignition_ch[9] = {
  * against a very fast tick rate could in principle wrap more than
  * once). */
 static uint32_t ticks_between(uint32_t earlier, uint32_t later) {
-    return (later - earlier) & 0xFFFFu;
+    /* The counter bus runs 1..EMIOS_COUNTER_MODULUS, so the modulus is
+     * 65535 and NOT a clean 16-bit mask. This used to be
+     * `(later - earlier) & 0xFFFF`, which quietly gained one tick every
+     * time the counter wrapped. A conditional subtract is exact for any
+     * modulus and costs no divide, which matters in an ISR on a core
+     * with no fast divider. */
+    if (later >= earlier) {
+        return later - earlier;
+    }
+    return (later + EMIOS_COUNTER_MODULUS) - earlier;
+}
+
+/* Adds a delay to a bus timestamp, wrapping the same way the counter
+ * does. Values on the bus are 1..EMIOS_COUNTER_MODULUS, never 0. */
+static uint32_t ticks_after(uint32_t start, uint32_t delta) {
+    uint32_t t = start + delta;
+    while (t > EMIOS_COUNTER_MODULUS) {
+        t -= EMIOS_COUNTER_MODULUS;
+    }
+    return t;
 }
 
 /* Real, generic unit-conversion formulas. Both are now called with real
@@ -106,6 +125,12 @@ static uint32_t normal_period_ticks;
  * defaults are deliberately the safe end - no MAP reading yet means
  * near-vacuum, which asks for the smallest pulse the table describes
  * rather than the largest. */
+/* Where the crank is, in cycle degrees, as of the most recent tooth.
+ * injection_arm_cylinder() needs it to work out how far ahead the spark
+ * angle sits; crank_capture_isr() is the only writer and runs before
+ * every call, so this is a plain hand-off, not shared state. */
+static uint32_t cycle_pos_deg;
+
 static volatile uint16_t fuel_map_kpa = MAP_KPA_AT_MIN;
 static volatile int32_t  fuel_iat_centiC = 2000;   /* 20 C until told otherwise */
 static int crank_capture_valid = 0;
@@ -137,7 +162,25 @@ static const uint8_t firing_order[ENGINE_CYLINDERS] = ENGINE_FIRING_ORDER;
  * of this eMIOS setup, which needs bench measurement on hardware that
  * does not exist yet. One interval is a defensible starting point, not
  * a measured optimum. */
-#define ARM_LEAD_DEG  ENGINE_FIRING_INTERVAL_DEG
+/* TWO firing intervals, not one, and the reason is concrete rather
+ * than a safety margin. Coil dwell is a fixed TIME, but the gap between
+ * firings shrinks with engine speed: on this eight-cylinder engine at
+ * 6000 rpm cylinders fire every 2.5 ms while the configured dwell is
+ * 3 ms. The coil for the next cylinder therefore has to start charging
+ * BEFORE the current one has fired - unavoidable, not a tuning error -
+ * and a one-interval lead simply cannot express that. Arming a whole
+ * interval earlier gives 5 ms at 6000 rpm, comfortably more than dwell
+ * plus the largest advance in the table.
+ *
+ * Overlapping like this is safe because every cylinder owns its own
+ * eMIOS channel, so charging coil N+1 while coil N is still armed
+ * touches two independent comparators. It would NOT be safe if
+ * cylinders shared a channel.
+ *
+ * Found by host simulation, which showed arming silently failing above
+ * 3000 rpm - the range guard in injection_arm_cylinder() was correctly
+ * refusing to schedule a spark the coil could not be charged for. */
+#define ARM_LEAD_DEG  (2u * ENGINE_FIRING_INTERVAL_DEG)
 
 /* Real, and now complete on the unit side: the caller supplies
  * microseconds, this converts to the eMIOS ticks the hardware actually
@@ -152,6 +195,17 @@ static const uint8_t firing_order[ENGINE_CYLINDERS] = ENGINE_FIRING_ORDER;
  * remember to add it - forgetting it makes the engine run lean at every
  * load point. Ignition dwell is NOT adjusted the same way: dwell is
  * already the real coil charge time, with no equivalent offset. */
+void injection_init_outputs(void) {
+    /* Walks this file's own channel tables rather than exposing them,
+     * which also means the module/base pairing for IGN6/7/8 - the three
+     * that live on eMIOS module 1 - is applied here exactly as it is in
+     * the firing path, from one table. */
+    for (uint8_t c = 1u; c <= ENGINE_CYLINDERS; c++) {
+        emios_init_output_channel(injector_ch[c].base, injector_ch[c].channel);
+        emios_init_output_channel(ignition_ch[c].base, ignition_ch[c].channel);
+    }
+}
+
 void injection_arm_cylinder(const cylinder_event_t *event) {
     /* Cylinders are 1-based (injection.h), and injector_ch/ignition_ch
      * are sized and indexed to match with a deliberately-unused slot 0.
@@ -168,19 +222,53 @@ void injection_arm_cylinder(const cylinder_event_t *event) {
 
     uint32_t inj_ticks = us_to_ticks(event->pulse_width_us + INJECTOR_DEAD_TIME_US,
                                      ECU_EMIOS_TICK_HZ);
-    uint32_t ign_ticks = us_to_ticks(event->dwell_us, ECU_EMIOS_TICK_HZ);
+    uint32_t dwell_ticks = us_to_ticks(event->dwell_us, ECU_EMIOS_TICK_HZ);
 
-    /* The eMIOS channel registers are 16-bit (emios.h), so a pulse
-     * longer than the counter can express would silently wrap and fire
-     * a far shorter pulse than asked for. Clamp instead: a clamped
-     * injector pulse is wrong, but a wrapped one is wrong AND looks
-     * fine. At the 1 MHz timebase this ceiling is 65.5 ms, far beyond
-     * any real injector pulse or dwell. */
-    if (inj_ticks > 0xFFFFu) { inj_ticks = 0xFFFFu; }
-    if (ign_ticks > 0xFFFFu) { ign_ticks = 0xFFFFu; }
+    /* How far ahead of the tooth we just captured the spark belongs.
+     * fire_angle_deg is an absolute crank angle carrying the spark
+     * advance (ignition.c); cycle_pos_deg is where the crank is now. */
+    uint32_t ahead_deg = (event->fire_angle_deg + ENGINE_CYCLE_DEGREES
+                          - cycle_pos_deg) % ENGINE_CYCLE_DEGREES;
+    uint32_t spark_delta = injection_angle_to_ticks((uint16_t)ahead_deg);
 
-    emios_set_pulse_width(inj->base, inj->channel, inj_ticks);
-    emios_set_pulse_width(ign->base, ign->channel, ign_ticks);
+    /* RANGE GUARD, and it is a real limit rather than defensive
+     * paranoia. The counter bus spans EMIOS_COUNTER_MODULUS ticks -
+     * 65.5 ms at this board's 1 MHz timebase - and a match scheduled
+     * further out than that lands a whole wrap early, firing a cylinder
+     * at a badly wrong angle instead of failing visibly. The arming lead
+     * is one firing interval, so at 6000 rpm the delta is about 2.5 ms
+     * and at idle about 25 ms, but CRANKING AT 200 RPM IT IS ABOUT
+     * 75 ms AND DOES NOT FIT. Refusing to arm is the safe response;
+     * see the README for the timebase tradeoff behind it. */
+    if (spark_delta >= EMIOS_COUNTER_MODULUS
+        || dwell_ticks >= spark_delta) {
+        return;
+    }
+
+    /* Ignition. EDPOL = 1, so the A match starts charging the coil and
+     * the B match releases it - and releasing the coil IS the spark, so
+     * B is the event the advance was computed for. The coil therefore
+     * starts charging one dwell BEFORE that. */
+    uint32_t spark_at  = ticks_after(last_crank_capture, spark_delta);
+    uint32_t charge_at = ticks_after(last_crank_capture,
+                                     spark_delta - dwell_ticks);
+    emios_schedule_pulse(ign->base, ign->channel, charge_at, spark_at);
+
+    /* Injection. The pulse width is real; its PHASE is not configurable
+     * yet - injection start angle is a genuine tuning parameter (it
+     * decides how much of the charge lands on a closed valve) and no
+     * value for it has been established, so this opens the injector at
+     * the arming point rather than pretending to a calibrated angle.
+     *
+     * The 16-bit channel registers cap a pulse at the counter modulus;
+     * clamp rather than wrap, because a wrapped pulse is both wrong and
+     * plausible-looking. 65.5 ms is far past any real injector command. */
+    if (inj_ticks >= EMIOS_COUNTER_MODULUS) {
+        inj_ticks = EMIOS_COUNTER_MODULUS - 1u;
+    }
+    uint32_t open_at  = ticks_after(last_crank_capture, 1u);
+    uint32_t close_at = ticks_after(open_at, inj_ticks);
+    emios_schedule_pulse(inj->base, inj->channel, open_at, close_at);
 }
 
 /* Real: crank ticks from the wheel's reference gap to a given crank
@@ -271,14 +359,14 @@ void crank_capture_isr(uint32_t capture_time) {
      * counting forward from the reference and subtracting that offset
      * gives the angle past TDC. */
     uint32_t from_ref  = (uint32_t)tooth_index * CRANK_DEGREES_PER_TOOTH;
-    uint32_t cycle_pos = ((uint32_t)revolution * 360u + from_ref
-                          + ENGINE_CYCLE_DEGREES - CRANK_GAP_TO_TDC_DEG)
-                         % ENGINE_CYCLE_DEGREES;
+    cycle_pos_deg = ((uint32_t)revolution * 360u + from_ref
+                     + ENGINE_CYCLE_DEGREES - CRANK_GAP_TO_TDC_DEG)
+                    % ENGINE_CYCLE_DEGREES;
 
     /* Arm whichever cylinder comes due one lead-window from here. The
      * window is half a tooth wide on either side so exactly one tooth
      * can match, whatever the wheel resolution. */
-    uint32_t target = (cycle_pos + ARM_LEAD_DEG) % ENGINE_CYCLE_DEGREES;
+    uint32_t target = (cycle_pos_deg + ARM_LEAD_DEG) % ENGINE_CYCLE_DEGREES;
     for (uint8_t i = 0u; i < ENGINE_CYLINDERS; i++) {
         uint32_t fire_at = fire_angle_for_order_index(i);
         uint32_t delta   = (fire_at + ENGINE_CYCLE_DEGREES - target)

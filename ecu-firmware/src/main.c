@@ -232,9 +232,40 @@ static void emios_capture_init(void) {
      * the 1 MHz / 1 us-per-tick base the injection maths assumes. */
     emios_init_timebase(EMIOS0_BASE, ECU_EMIOS_PRESCALER);
 
+    /* THE COUNTER BUS HAS TO EXIST BEFORE ANYTHING ELSE IS ARMED.
+     * Every capture and every output compare on this part measures
+     * against a counter bus, and a bus is just one channel running a
+     * modulus counter and broadcasting it. Counter bus A is the global
+     * one (BSL = 00 on every channel, Table 27-20) and Unified Channel
+     * 23 is what drives it.
+     *
+     * Nothing drove it until now. The capture channels below have
+     * always selected bus A - BSL = 00 is what their control word
+     * writes - so every crank and cam timestamp was read from a bus
+     * that never counted. Identical values every time, so the measured
+     * tooth period was always zero, so the wheel never synced and
+     * nothing downstream could ever run. Real bug, and upstream of
+     * everything else in the firing path.
+     *
+     * Both eMIOS blocks need their own, because this board's ignition
+     * channels span the two: IGN6/7/8 are on module 1 (E1UC28/29/31)
+     * while everything else is on module 0. */
+    emios_init_counter_bus(EMIOS0_BASE, EMIOS_COUNTER_BUS_CH);
+    emios_init_counter_bus(EMIOS1_BASE, EMIOS_COUNTER_BUS_CH);
+
     emios_init_capture_channel(EMIOS0_BASE, EMIOS_CRANK_CH, 1);
     emios_init_capture_channel(EMIOS0_BASE, EMIOS_CAM1_CH, 1);
     emios_init_capture_channel(EMIOS0_BASE, EMIOS_CAM2_CH, 1);
+
+    /* The sixteen injector and ignition outputs. These were NEVER
+     * INITIALISED - siul2.c muxed the pins to their eMIOS alternate
+     * function, but the unified channels themselves sat in their reset
+     * mode, so injection_arm_cylinder() was writing match registers on
+     * channels that were not in any output mode. Nothing would have
+     * fired. DAOC leaves each pin low on entry, so this is also the
+     * point at which every injector and coil is put into a known safe
+     * state rather than an undefined one. */
+    injection_init_outputs();
 }
 
 /* Real: registers this board's two real, shared eMIOS_0 capture

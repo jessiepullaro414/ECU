@@ -145,6 +145,35 @@ def validate(cfg):
     # cylinders, where the firing interval is small: a V12 has only 60
     # degrees between firings, which a 46-degree advance plus coil dwell
     # can genuinely exceed.
+    # --- can the counter bus even REACH the scheduling horizon? -------
+    # Every match is scheduled as an absolute value on a 16-bit counter
+    # bus running at the configured tick rate, so the bus spans a fixed
+    # WALL-CLOCK window. The arming lead is an ANGLE, and at low rpm an
+    # angle is a long time. Below some engine speed the lead simply does
+    # not fit in the counter and injection_arm_cylinder() refuses to
+    # schedule - which is safe, but silent, and cranking is exactly where
+    # it bites. Surfaced here with the real numbers rather than left to
+    # be discovered on a bench.
+    tick_hz = 60000000 // tb["emios_prescaler"]
+    modulus = 65535
+    window_s = modulus / tick_hz
+    lead_deg = 2 * (cfg["engine"]["cycle_degrees"] // cfg["engine"]["cylinders"])
+    min_rpm = lead_deg / (6.0 * window_s)
+    if min_rpm > 250:
+        # tick_hz needed so the lead fits at 200 rpm:
+        #   200 = lead_deg / (6 * modulus / tick_hz)
+        #   tick_hz = 200 * 6 * modulus / lead_deg
+        want = int(round(60000000 * lead_deg / (200 * 6.0 * modulus)))
+        want = min(want, 256)          # GPRE is 8 bits, ratio = GPRE + 1
+        print(f"  NOTE: at {tick_hz} Hz the counter bus spans "
+              f"{window_s * 1000:.1f} ms, so a {lead_deg} deg arming lead only "
+              f"fits above about {min_rpm:.0f} rpm.")
+        print(f"        Cranking (150-250 rpm) is BELOW that, so no cylinder "
+              f"would be scheduled while starting.")
+        print(f"        A prescaler of about {want} (tick rate "
+              f"{60000000 // want} Hz) would cover 200 rpm, at the cost of "
+              f"coarser rpm resolution.")
+
     max_adv = max(max(r) for r in cfg["ignition"]["advance"]["table"])
     interval = cfg["engine"]["cycle_degrees"] // cfg["engine"]["cylinders"]
     if max_adv >= interval:

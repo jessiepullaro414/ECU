@@ -72,3 +72,55 @@ void emios_init_timebase(uint32_t base, uint32_t divide_ratio) {
     EMIOS_MCR(base) = mcr | EMIOS_MCR_GPRE(divide_ratio);
     EMIOS_MCR(base) |= EMIOS_MCR_GPREN;
 }
+
+void emios_init_counter_bus(uint32_t base, uint8_t channel) {
+    /* Same mode-transition rule the other init functions follow
+     * (27.4.4.1.1.1): go via GPIO, never jump between two non-GPIO
+     * modes. */
+    EMIOS_C(base, channel) = (EMIOS_MODE_GPIO_OUT << EMIOSC_MODE_SHIFT);
+
+    /* A1 is the modulus. The counter runs 1..A1 and restarts, so this
+     * gives the widest time base the 16-bit registers can express. */
+    EMIOS_A(base, channel) = EMIOS_COUNTER_MODULUS;
+
+    /* "in order to avoid the counter wrap condition, make sure its value
+     * is within the 0x1 to A1 register value range when the MCB mode is
+     * entered" - the reset value is 0, which is outside that range, so
+     * seed it explicitly rather than inherit a documented hazard. */
+    EMIOS_CNT(base, channel) = 1u;
+
+    /* MODE[6] = 0 selects the internal (prescaled) clock rather than the
+     * channel's input pin, which is what EMIOS_MODE_MCB_UP encodes. No
+     * FEN: this channel is a time base, not an event source, and an
+     * interrupt every 65535 ticks would be pure overhead. */
+    EMIOS_C(base, channel) = (EMIOS_MODE_MCB_UP << EMIOSC_MODE_SHIFT);
+}
+
+void emios_init_output_channel(uint32_t base, uint8_t channel) {
+    EMIOS_C(base, channel) = (EMIOS_MODE_GPIO_OUT << EMIOSC_MODE_SHIFT);
+
+    /* BSL = 00 selects counter bus A on every channel (Table 27-20),
+     * which is the bus emios_init_counter_bus() drives and the same one
+     * the capture channels timestamp against.
+     *
+     * EDPOL = 1 so an A match sets the pin and a B match clears it. Mode
+     * entry drives the output to the complement of EDPOL, so the pin
+     * starts LOW - injectors shut, coils cold.
+     *
+     * No FEN. Nothing needs an interrupt when a pulse completes: the
+     * next crank tooth is what schedules the next one, and an ISR per
+     * edge across sixteen channels would be real load for no benefit. */
+    EMIOS_C(base, channel) = (EMIOS_MODE_DAOC_FLAG_B << EMIOSC_MODE_SHIFT)
+                           | EMIOSC_EDPOL;
+}
+
+void emios_schedule_pulse(uint32_t base, uint8_t channel,
+                          uint32_t on_ticks, uint32_t off_ticks) {
+    /* Writing A2/B2 transfers to A1/B1 on the next system clock and
+     * re-enables each comparator. Order matters only in that both should
+     * be in place before either can match; at any real engine speed the
+     * two writes are adjacent instructions and the earliest match is
+     * many microseconds away. */
+    EMIOS_A(base, channel) = on_ticks;
+    EMIOS_B(base, channel) = off_ticks;
+}

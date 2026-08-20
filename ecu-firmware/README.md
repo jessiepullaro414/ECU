@@ -1066,29 +1066,110 @@ sits at angle 0 and is therefore the common case rather than a corner
 case: 26 degrees of advance on a 720-degree cycle gives a spark angle of
 **694**, not a negative number.
 
-### The output path is the real remaining gap
+### The output path is real now
 
-**`fire_angle_deg` is computed correctly and still not consumed**, and
-finding out why turned up something bigger than a missing call.
-`emios_init_opwfmb_channel()` **is never called anywhere**. Only the
-three crank/cam *capture* channels are initialised
-(`emios_capture_init()`); all sixteen injector and ignition output
-channels are muxed to their eMIOS alternate function by SIUL2 but their
-unified channels are left in reset state, so `injection_arm_cylinder()`
-writes `EMIOS_B` on unconfigured channels. **Nothing would fire.**
+**Two bugs, both upstream of everything else in the firing path.**
 
-That is not a one-line fix, because the mode is also likely wrong.
-OPWFMB is periodic PWM — `A` is the period, `B` the pulse width — so it
-free-runs and emits a pulse every period regardless of crank position.
-Injection and ignition want a *one-shot pulse positioned at an angle*.
-The eMIOS mode built for that is OPWMB running against a shared counter
-bus, where `A` is the leading edge and `B` the trailing edge as
-positions on a continuously running counter, rewritten each cycle. That
-needs a real pass over the eMIOS chapter — counter bus selection, which
-channel drives the bus, and the mode-transition rules — before any of it
-is written down.
+`emios_init_opwfmb_channel()` was **never called anywhere**. Only the
+three crank/cam capture channels were initialised; all sixteen injector
+and ignition output channels were muxed to their eMIOS alternate
+function by SIUL2 but their unified channels sat in reset state, so
+`injection_arm_cylinder()` was writing match registers on channels that
+were in no output mode. Nothing would have fired.
 
-Until then the advance is real, carried, and inert.
+Worse, and found while fixing that: **nothing drove counter bus A.**
+Every timing function on this part - capture and output compare alike -
+compares against a counter bus, and a bus is just one channel running a
+modulus counter and broadcasting it. The capture channels always
+selected bus A (`BSL = 00`, which is what their control word writes),
+and bus A is driven by Unified Channel 23, which nothing configured. So
+every crank and cam timestamp was read from a bus that never counted:
+identical values every time, tooth period always zero, wheel never
+synced. The engine could not have run even with the outputs fixed.
+
+**DAOC, not OPWFMB.** OPWFMB is periodic PWM - `A` is the period, `B`
+the width - so it free-runs and pulses regardless of where the crank is.
+Double Action Output Compare is the one-shot mode: per Section
+27.4.4.1.1.6 each comparator *"is enabled only after the transfer to
+A1/B1 occurs and is disabled on the next match"*, so writing arms one
+pulse, it fires once, and the hardware disarms itself until the next
+crank event. With `EDPOL = 1` an A match drives the pin high and a B
+match low, and mode entry leaves the output at the *complement* of
+EDPOL - low - so initialising puts every injector shut and every coil
+cold rather than in an undefined state.
+
+That maps onto ignition exactly: releasing the coil **is** the spark, so
+the B match is the event the advance was computed for, and A is one
+dwell earlier. `DAOC = 0000110` and `MCB Up = 101000b` were confirmed by
+rendering Table 27-21 rather than trusting text extraction - the same
+render also showed `OPWFMB = 10110b0`, matching the constant this
+codebase had already verified independently, which is what makes the
+other two trustworthy.
+
+**A third bug fell out of the counter bus.** MCB up mode counts
+`1..A1` inclusive (Section 27.4.4.1.1.8: *"the MCB mode counts between
+0x1 and A1 register value"*), so with `A1 = 0xFFFF` the modulus is
+**65535, not 65536**. `ticks_between()` masked with `0xFFFF` and
+therefore gained one tick every wrap. It is a conditional subtract now,
+exact for any modulus and free of a divide.
+
+**And a real scheduling constraint, found by simulation.** Arming was
+silently failing above 3000 rpm: the range guard was correctly refusing
+to schedule a spark the coil could not be charged for. On this
+eight-cylinder engine at 6000 rpm cylinders fire every **2.5 ms** while
+the configured dwell is **3 ms** - so the next coil must start charging
+before the current one has fired. That is unavoidable, not a tuning
+error, and a one-firing-interval arming lead cannot express it.
+`ARM_LEAD_DEG` is two intervals now, which gives 5 ms at 6000 rpm.
+Overlap is safe precisely because every cylinder owns its own eMIOS
+channel.
+
+Host-verified: at 3000 rpm ignition pulses are exactly the 3 ms dwell
+and injector pulses exactly the computed width plus dead time; every
+match value stays inside `1..65535`; pulses that straddle the counter
+wrap (`on=57605 off=2243`) still measure the correct width; and 30
+events arm per run at every speed from 450 to 6000 rpm.
+
+### The remaining gap: cranking does not fit the counter
+
+At 1 MHz the counter bus spans **65.5 ms**, and a 180-degree arming lead
+is a long time at low rpm - below about **458 rpm the lead does not fit
+in the counter at all** and `injection_arm_cylinder()` refuses to
+schedule. Refusing is the safe response, but cranking happens at
+150-250 rpm, so as configured **no cylinder would be scheduled while
+starting the engine.**
+
+The generator now says so with the real numbers rather than leaving it
+to a bench discovery:
+
+```
+NOTE: at 1000000 Hz the counter bus spans 65.5 ms, so a 180 deg arming
+      lead only fits above about 458 rpm.
+      Cranking (150-250 rpm) is BELOW that, so no cylinder would be
+      scheduled while starting.
+      A prescaler of about 137 (tick rate 437956 Hz) would cover 200 rpm,
+      at the cost of coarser rpm resolution.
+```
+
+This is a genuine tradeoff rather than an oversight, which is why it is
+flagged instead of silently changed. A prescaler of 138 gives 2.3 us per
+tick and a 150 ms window, covering 199 rpm - but rpm is derived from a
+single tooth period, and at 6000 rpm that period drops from 278 ticks to
+64, coarsening speed resolution roughly fourfold. Averaging the period
+over several teeth would recover most of it. The alternative is to keep
+1 us resolution and schedule cranking differently.
+
+### What is still not consumed
+
+Injection **phase** — the crank angle at which the injector opens — is
+still not a configured value. Pulse width is real and the injector is
+scheduled on the counter bus like everything else, but it opens at the
+arming point rather than at a calibrated angle. Injection phasing is a
+genuine tuning parameter (it decides how much of the charge lands on a
+closed valve) and no value for it has been established, so pretending to
+one would be worse than saying this.
+
+
 
 ## Analog sensors
 

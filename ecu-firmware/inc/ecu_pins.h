@@ -96,6 +96,15 @@
 #define EMIOS_IGN8_MOD  EMIOS_MOD_1
 #define EMIOS_IGN8_CH   31u
 
+/* ---- Counter bus driver -----------------------------------------------
+ * Unified Channel 23 is the ONE channel that can drive counter bus A,
+ * the global time base every other channel compares against (the eMIOS
+ * feature list is explicit: "Counter bus A is driven by the Unified
+ * Channel 23"). It is not brought out to any pin on this board and is
+ * used purely as a time base, on both eMIOS modules. Confirmed free -
+ * no injector, ignition or capture channel above claims 23. */
+#define EMIOS_COUNTER_BUS_CH   23u
+
 /* ---- Crank / cam position (VR sensors via MAX9924, open-drain COUT) --- */
 #define PIN_CRANK_CAPTURE   42u   /* E0UC0 - real independent crank input capture */
 #define PIN_CAM1_CAPTURE    11u   /* E0UC1 - intake cam */

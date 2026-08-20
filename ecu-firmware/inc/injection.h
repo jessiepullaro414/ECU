@@ -64,6 +64,12 @@ typedef struct {
  * delay is done (injection_angle_to_ticks() below); what remains is the
  * scheduling decision of WHICH cylinder is due at a given crank edge,
  * which needs the firing-order walk in crank_capture_isr(). */
+/* Puts all 16 injector and ignition channels into DAOC output mode.
+ * Must run after emios_init_counter_bus() - the channels compare
+ * against that bus - and before anything tries to arm a cylinder.
+ * Leaves every output low, so injectors are shut and coils cold. */
+void injection_init_outputs(void);
+
 void injection_arm_cylinder(const cylinder_event_t *event);
 
 /* Real: crank ticks from the trigger wheel's reference gap to a given

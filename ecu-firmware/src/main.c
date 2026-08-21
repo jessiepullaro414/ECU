@@ -484,6 +484,16 @@ static void update_tables(void) {
     }
     injection_set_fuel_inputs((uint16_t)map_kpa, iat_centiC);
 
+    /* Battery voltage sets injector dead time and coil dwell. A failed
+     * reading falls back to the nominal rail rather than zero: 0 V would
+     * read the longest entry off both curves, commanding a hugely
+     * overlong injector pulse and an overcharged coil. */
+    int32_t vbatt_mv = sensor_convert(SENSOR_VBATT, sensors.vbatt);
+    if (vbatt_mv == SENSOR_INVALID || vbatt_mv <= 0) {
+        vbatt_mv = 14000;
+    }
+    injection_set_battery_mv((uint16_t)vbatt_mv);
+
     /* Still real and still not done, unchanged by the above: dwell
      * table, ignition timing table, closed-loop O2 trim, boost target
      * vs. wastegate duty, ETC throttle-plate target vs. pedal position

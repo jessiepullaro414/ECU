@@ -51,8 +51,8 @@
 #define CRANK_GAP_TO_TDC_DEG  90u
 
 /* ---- Injection / ignition ----------------------------------------- */
-#define INJECTOR_DEAD_TIME_US 1000u
-#define IGNITION_DWELL_US     3000u
+/* Injector dead time and coil dwell are voltage-dependent curves now,
+ * not constants - see DEADTIME_* and DWELL_* below. */
 
 /* ---- Fuelling ------------------------------------------------------
  * Speed-density: air mass in the cylinder from pressure, volume and
@@ -105,6 +105,20 @@ static const int16_t  SPARK_TABLE[SPARK_MAP_COUNT][SPARK_RPM_COUNT] = {
     {   10,   15,   20,   24,   29,   32,   34,   34 },   /*   80 kPa */
     {    8,   12,   16,   20,   26,   30,   32,   32 },   /*  100 kPa */
 };
+
+/* ---- Injector dead time vs battery voltage --------------------
+ * Microseconds of opening delay, added to every pulse width.
+ * PLACEHOLDER SHAPE - see config/engine.toml. */
+#define DEADTIME_COUNT   6u
+static const uint16_t DEADTIME_MV[DEADTIME_COUNT] = { 6000u, 8000u, 10000u, 12000u, 14000u, 16000u };
+static const int16_t  DEADTIME_US[DEADTIME_COUNT] = {  2400,  1700,  1300,  1050,   880,   760 };
+
+/* ---- Coil dwell vs battery voltage ----------------------------
+ * Microseconds of primary charge time before the spark.
+ * PLACEHOLDER SHAPE - see config/engine.toml. */
+#define DWELL_COUNT   6u
+static const uint16_t DWELL_MV[DWELL_COUNT] = { 6000u, 8000u, 10000u, 12000u, 14000u, 16000u };
+static const int16_t  DWELL_US[DWELL_COUNT] = {  7000,  5000,  3900,  3200,  2800,  2500 };
 
 /* The largest advance the spark table can command, in crank degrees.
  * The scheduling lead has to stay wider than this - the generator

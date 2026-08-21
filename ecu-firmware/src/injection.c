@@ -27,6 +27,7 @@
 #include "emios.h"
 #include "fuel.h"
 #include "ignition.h"
+#include "table.h"
 
 typedef struct {
     uint32_t base;
@@ -133,6 +134,13 @@ static uint32_t cycle_pos_deg;
 
 static volatile uint16_t fuel_map_kpa = MAP_KPA_AT_MIN;
 static volatile int32_t  fuel_iat_centiC = 2000;   /* 20 C until told otherwise */
+
+/* Battery voltage, published by the main loop. The default is the
+ * nominal running voltage rather than zero: before the first ADC sweep
+ * completes, assuming a healthy rail gives sensible dead time and dwell,
+ * whereas assuming 0 V would read the longest entry off both curves and
+ * command a hugely overlong pulse and an overcharged coil. */
+static volatile uint16_t battery_mv = 14000u;
 static int crank_capture_valid = 0;
 static int cam_synced = 0;
 
@@ -270,7 +278,8 @@ void injection_arm_cylinder(const cylinder_event_t *event) {
     const emios_channel_t *inj = &injector_ch[event->cylinder];
     const emios_channel_t *ign = &ignition_ch[event->cylinder];
 
-    uint32_t inj_ticks = us_to_ticks(event->pulse_width_us + INJECTOR_DEAD_TIME_US,
+    uint32_t inj_ticks = us_to_ticks((uint32_t)event->pulse_width_us
+                                     + (uint32_t)injection_dead_time_us(),
                                      ECU_EMIOS_TICK_HZ);
     uint32_t dwell_ticks = us_to_ticks(event->dwell_us, ECU_EMIOS_TICK_HZ);
 
@@ -281,18 +290,33 @@ void injection_arm_cylinder(const cylinder_event_t *event) {
                           - cycle_pos_deg) % ENGINE_CYCLE_DEGREES;
     uint32_t spark_delta = injection_angle_to_ticks((uint16_t)ahead_deg);
 
-    /* RANGE GUARD, and it is a real limit rather than defensive
-     * paranoia. The counter bus spans EMIOS_COUNTER_MODULUS ticks -
-     * 65.5 ms at this board's 1 MHz timebase - and a match scheduled
-     * further out than that lands a whole wrap early, firing a cylinder
-     * at a badly wrong angle instead of failing visibly. The arming lead
-     * is one firing interval, so at 6000 rpm the delta is about 2.5 ms
-     * and at idle about 25 ms, but CRANKING AT 200 RPM IT IS ABOUT
-     * 75 ms AND DOES NOT FIT. Refusing to arm is the safe response;
-     * see the README for the timebase tradeoff behind it. */
-    if (spark_delta >= EMIOS_COUNTER_MODULUS
-        || dwell_ticks >= spark_delta) {
+    /* RANGE GUARD. A match scheduled further out than the counter bus
+     * can express lands a whole wrap early, firing a cylinder at a badly
+     * wrong angle instead of failing visibly, so refuse instead.
+     *
+     * With the lead sized from dwell (arming_lead_deg) this is no longer
+     * reached in normal running - the generator reports the real floor,
+     * currently 65 rpm, which is far below cranking. It stays because a
+     * stalling or badly mis-synced engine can still produce a nonsense
+     * period, and a silent wrap is the worst possible failure here. */
+    if (spark_delta >= EMIOS_COUNTER_MODULUS || spark_delta < 2u) {
         return;
+    }
+
+    /* SHORTEN DWELL RATHER THAN REFUSE TO FIRE. Dwell is a fixed time
+     * but the gap between firings shrinks with engine speed, so above
+     * roughly 8000 rpm on this engine the coil cannot be fully charged
+     * in the time available. A shorter charge gives a weaker spark;
+     * refusing to schedule gives none at all, which would act as an
+     * abrupt and undocumented rev limiter. Real ECUs shorten dwell here,
+     * and the driver IC's own over-current protection is unaffected
+     * either way.
+     *
+     * Leaves a little of the window unused so the coil-on edge cannot
+     * collide with the spark edge itself. */
+    uint32_t max_dwell = spark_delta - (spark_delta / 8u);
+    if (dwell_ticks > max_dwell) {
+        dwell_ticks = max_dwell;
     }
 
     /* Ignition. EDPOL = 1, so the A match starts charging the coil and
@@ -442,7 +466,8 @@ void crank_capture_isr(uint32_t capture_time) {
      * have done the same work eight times in an ISR. */
     uint16_t rpm_now      = injection_crank_rpm();
     int16_t  advance_now  = ignition_advance_deg(rpm_now, fuel_map_kpa);
-    uint32_t dwell_ticks  = us_to_ticks(IGNITION_DWELL_US, ECU_EMIOS_TICK_HZ);
+    uint16_t dwell_us     = ignition_dwell_us(battery_mv);
+    uint32_t dwell_ticks  = us_to_ticks(dwell_us, ECU_EMIOS_TICK_HZ);
     uint32_t lead         = arming_lead_deg(dwell_ticks, advance_now);
 
     uint32_t target = (cycle_pos_deg + lead) % ENGINE_CYCLE_DEGREES;
@@ -469,7 +494,7 @@ void crank_capture_isr(uint32_t capture_time) {
             uint32_t pw = fuel_pulse_width_us(rpm_now, fuel_map_kpa,
                                               fuel_iat_centiC);
             event.pulse_width_us = (pw > 65535u) ? 65535u : (uint16_t)pw;
-            event.dwell_us       = IGNITION_DWELL_US;
+            event.dwell_us       = dwell_us;
 
             /* fire_at is this cylinder's TDC; the spark belongs
              * ADVANCE degrees before it. */
@@ -500,6 +525,16 @@ void cam2_capture_isr(uint32_t capture_time) {
      * provides that); real use is VVT position feedback, not
      * implemented this session. */
     (void)capture_time;
+}
+
+void injection_set_battery_mv(uint16_t mv) {
+    battery_mv = mv;
+}
+
+uint16_t injection_dead_time_us(void) {
+    int32_t us = table1d_lookup(DEADTIME_MV, (uint8_t)DEADTIME_COUNT,
+                                DEADTIME_US, battery_mv);
+    return (uint16_t)((us < 0) ? 0 : us);
 }
 
 void injection_set_fuel_inputs(uint16_t map_kpa, int32_t iat_centiC) {

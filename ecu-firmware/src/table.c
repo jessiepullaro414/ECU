@@ -62,3 +62,11 @@ int32_t table2d_lookup(const uint16_t *x_axis, uint8_t nx,
                         cells[(uint16_t)yi2 * nx + xi2], xf);
     return lerp(low, high, yf);
 }
+
+int32_t table1d_lookup(const uint16_t *axis, uint8_t n,
+                       const int16_t *cells, uint16_t x) {
+    int32_t f;
+    uint8_t i = axis_lookup(axis, n, x, &f);
+    uint8_t i2 = ((uint8_t)(i + 1u) < n) ? (uint8_t)(i + 1u) : i;
+    return lerp(cells[i], cells[i2], f);
+}

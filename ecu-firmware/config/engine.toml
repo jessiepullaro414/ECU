@@ -61,23 +61,52 @@ missing = 1
 # the default below is a placeholder, not a typical value to rely on.
 gap_to_tdc_deg = 90
 
-[injection]
+[injection.dead_time]
 # How long the injector takes to physically open after the driver turns
 # on. Added to every computed pulse width; omit it and the engine runs
 # lean by roughly this much at every load point.
 #
-# This varies strongly with battery voltage, which is exactly why the
-# board has a dedicated VBATT sense channel. A single figure here is a
-# placeholder for the voltage-compensated table that belongs in its
-# place once there is an engine to measure against.
-dead_time_us = 1000
+# IT IS A FUNCTION OF BATTERY VOLTAGE, not a constant, which is why the
+# board has a dedicated VBATT sense channel. The injector solenoid has
+# to build enough current to overcome the spring and fuel pressure
+# holding the pintle shut, and current builds faster from a higher
+# supply. Across a real 8-16 V range the delay changes by roughly a
+# factor of three - so a single figure runs the engine lean exactly when
+# the alternator is struggling or the starter is dragging the rail down,
+# which is also when it can least afford it.
+#
+# PLACEHOLDER SHAPE, NOT A MEASUREMENT. Real numbers come from the
+# injector's own datasheet, or from a bench rig measuring the pintle's
+# actual opening delay against supply voltage. The curve below has the
+# right form for a saturated high-impedance injector and describes no
+# specific part.
+volts_mv = [ 6000, 8000, 10000, 12000, 14000, 16000 ]
+us       = [ 2400, 1700,  1300,  1050,   880,   760 ]
 
-[ignition]
+[ignition.dwell]
 # Coil charge time before the spark. Too short gives a weak spark; too
-# long overheats the coil. Also really wants a voltage-compensated
-# table. The L9779WD-SPI's own over-current protection is a hardware
-# backstop, not the primary limit.
-dwell_us = 3000
+# long overheats the coil and wastes energy as heat in the driver.
+#
+# SAME STORY AS INJECTOR DEAD TIME: this is a function of battery
+# voltage. Dwell is however long it takes the primary current to reach
+# the coil's design figure, and current in an inductor rises at V/L, so
+# a lower supply needs proportionally longer. The L9779WD-SPI's own
+# over-current protection is a hardware backstop against getting this
+# wrong, not the primary limit.
+#
+# PLACEHOLDER SHAPE, NOT A MEASUREMENT. Real numbers come from the
+# coil's datasheet (target primary current and inductance) or from
+# measuring primary current on a bench. Roughly inverse in voltage,
+# which is the shape below.
+#
+# A SECOND LIMIT APPLIES AT HIGH RPM and is NOT in this table, because
+# it is not a property of the coil: above roughly 7000 rpm on an eight
+# cylinder engine the gap between firings becomes shorter than the dwell
+# itself, so the firmware shortens dwell to fit the time actually
+# available (see injection_arm_cylinder). A weaker spark still fires;
+# refusing to schedule would simply cut the engine.
+volts_mv = [ 6000, 8000, 10000, 12000, 14000, 16000 ]
+us       = [ 7000, 5000,  3900,  3200,  2800,  2500 ]
 
 [timebase]
 # eMIOS global prescaler divide ratio, applied to the confirmed 60 MHz

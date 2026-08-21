@@ -133,6 +133,10 @@ def validate(cfg):
             f"map_sensor.adc_counts_at_max = {m['adc_counts_at_max']}, must be "
             f"1..4095 - the MCU ADC is 12-bit")
 
+    validate_table1d(cfg["injection"]["dead_time"], "injection.dead_time",
+                     100, 5000, "us")
+    validate_table1d(cfg["ignition"]["dwell"], "ignition.dwell",
+                     500, 20000, "us")
     validate_table2d(cfg["ve"], "ve", 10, 150, "%")
     validate_table2d(cfg["ignition"]["advance"], "ignition.advance",
                      -20, 60, "deg BTDC")
@@ -161,7 +165,16 @@ def validate(cfg):
     modulus = 65535
     deg_per_tooth = 360 // crank["teeth"]
     interval = cfg["engine"]["cycle_degrees"] // cfg["engine"]["cylinders"]
-    dwell_ticks = ign["dwell_us"] * tick_hz // 1000000
+    # Use the dwell at the nominal RUNNING voltage. The longest dwell in
+    # the curve belongs to the lowest voltage, which only occurs while
+    # cranking - and cranking happens at a couple of hundred rpm, so
+    # pairing it with a high-rpm limit would report a combination that
+    # cannot occur. The firmware clamps dwell to the window that is
+    # actually available anyway.
+    dwell_mv = ign["dwell"]["volts_mv"]
+    nominal_i = min(range(len(dwell_mv)), key=lambda i: abs(dwell_mv[i] - 14000))
+    dwell_us_nom = ign["dwell"]["us"][nominal_i]
+    dwell_ticks = dwell_us_nom * tick_hz // 1000000
     max_adv = max(max(r) for r in cfg["ignition"]["advance"]["table"])
 
     def delta_at(rpm):
@@ -209,7 +222,8 @@ def validate(cfg):
             ceil_rpm = rpm
             break
     if ceil_rpm is not None:
-        print(f"  dwell of {ign['dwell_us']} us stops fitting the lead above "
+        print(f"  dwell at {dwell_mv[nominal_i] / 1000:.0f} V ({dwell_us_nom} us) "
+              f"stops fitting the lead above "
               f"about {ceil_rpm} rpm - shorten dwell there (a dwell-vs-rpm "
               f"table) if that is inside your rev range")
 
@@ -273,8 +287,8 @@ TEMPLATE = '''/*
 #define CRANK_GAP_TO_TDC_DEG  {gap}u
 
 /* ---- Injection / ignition ----------------------------------------- */
-#define INJECTOR_DEAD_TIME_US {dead_time}u
-#define IGNITION_DWELL_US     {dwell}u
+/* Injector dead time and coil dwell are voltage-dependent curves now,
+ * not constants - see DEADTIME_* and DWELL_* below. */
 
 /* ---- Fuelling ------------------------------------------------------
  * Speed-density: air mass in the cylinder from pressure, volume and
@@ -296,6 +310,10 @@ TEMPLATE = '''/*
 {ve_block}
 
 {spark_block}
+
+{deadtime_block}
+
+{dwell_block}
 
 /* The largest advance the spark table can command, in crank degrees.
  * The scheduling lead has to stay wider than this - the generator
@@ -326,8 +344,6 @@ def main():
         teeth=crank["teeth"],
         missing=crank["missing"],
         gap=crank["gap_to_tdc_deg"],
-        dead_time=cfg["injection"]["dead_time_us"],
-        dwell=cfg["ignition"]["dwell_us"],
         displacement=cfg["fuel"]["displacement_cc"],
         inj_flow=cfg["fuel"]["injector_cc_per_min"],
         fuel_density=cfg["fuel"]["fuel_density_mg_per_cc"],
@@ -349,6 +365,16 @@ def main():
             " * A STARTING SHAPE, NOT A TUNED MAP. Over-advance destroys\n"
             " * pistons - see config/engine.toml. */"),
         spark_max=max(max(r) for r in cfg["ignition"]["advance"]["table"]),
+        deadtime_block=table1d_c(
+            cfg["injection"]["dead_time"], "DEADTIME",
+            "/* ---- Injector dead time vs battery voltage --------------------\n"
+            " * Microseconds of opening delay, added to every pulse width.\n"
+            " * PLACEHOLDER SHAPE - see config/engine.toml. */"),
+        dwell_block=table1d_c(
+            cfg["ignition"]["dwell"], "DWELL",
+            "/* ---- Coil dwell vs battery voltage ----------------------------\n"
+            " * Microseconds of primary charge time before the spark.\n"
+            " * PLACEHOLDER SHAPE - see config/engine.toml. */"),
     )
     with open(OUT, "w", encoding="utf-8") as f:
         f.write(text)
@@ -369,6 +395,10 @@ def main():
     interval = cfg["engine"]["cycle_degrees"] // cfg["engine"]["cylinders"]
     print(f"  spark table {len(sp['map_axis'])} MAP x {len(sp['rpm_axis'])} RPM, "
           f"{min(sflat)}-{max(sflat)} deg BTDC")
+    dt = cfg["injection"]["dead_time"]; dw = cfg["ignition"]["dwell"]
+    print(f"  dead time {max(dt['us'])}-{min(dt['us'])} us and dwell "
+          f"{max(dw['us'])}-{min(dw['us'])} us over "
+          f"{min(dt['volts_mv']) / 1000:.0f}-{max(dt['volts_mv']) / 1000:.0f} V")
     print(f"  {cfg['fuel']['displacement_cc']} cc, "
           f"{cfg['fuel']['injector_cc_per_min']} cc/min injectors, "
           f"target AFR {cfg['fuel']['target_afr_x10'] / 10:.1f}")
@@ -473,6 +503,47 @@ def validate_table2d(sect, label, lo, hi, unit):
                     f"{label}.table[{i}][{j}] = {v} {unit} at {mapa[i]} kPa / "
                     f"{rpm[j]} rpm is outside {lo}..{hi} {unit} - almost "
                     f"certainly a typo")
+
+
+def validate_table1d(sect, label, lo, hi, unit):
+    """Shared checks for a one-axis curve. Same failure modes as the 2-D
+    tables: an axis that does not ascend makes the lookup interpolate
+    between the wrong pair and return a plausible wrong number."""
+    axis, cells = sect["volts_mv"], sect["us"]
+    if len(axis) < 2:
+        raise ConfigError(f"{label}.volts_mv needs at least 2 breakpoints")
+    if any(b <= a for a, b in zip(axis, axis[1:])):
+        raise ConfigError(
+            f"{label}.volts_mv must be strictly ascending, got {axis}")
+    if len(cells) != len(axis):
+        raise ConfigError(
+            f"{label}.us has {len(cells)} entries but {label}.volts_mv has "
+            f"{len(axis)} breakpoints - one per voltage")
+    for i, v in enumerate(cells):
+        if not (lo <= v <= hi):
+            raise ConfigError(
+                f"{label}.us[{i}] = {v} {unit} at {axis[i] / 1000:.1f} V is "
+                f"outside {lo}..{hi} {unit} - almost certainly a typo")
+    # Both curves describe a coil or solenoid charging from the supply,
+    # so both MUST fall as voltage rises. A rising segment is not a
+    # tuning choice, it is backwards physics.
+    for (v0, t0), (v1, t1) in zip(zip(axis, cells), zip(axis[1:], cells[1:])):
+        if t1 > t0:
+            raise ConfigError(
+                f"{label}: {t0} {unit} at {v0 / 1000:.1f} V but {t1} {unit} at "
+                f"{v1 / 1000:.1f} V. Current builds FASTER from a higher "
+                f"supply, so this curve must fall as voltage rises.")
+
+
+def table1d_c(sect, prefix, comment):
+    axis, cells = sect["volts_mv"], sect["us"]
+    out = [comment,
+           f"#define {prefix}_COUNT   {len(axis)}u",
+           f"static const uint16_t {prefix}_MV[{prefix}_COUNT] = {{ "
+           + ", ".join(f"{v}u" for v in axis) + " };",
+           f"static const int16_t  {prefix}_US[{prefix}_COUNT] = {{ "
+           + ", ".join(f"{v:5d}" for v in cells) + " };"]
+    return "\n".join(out)
 
 
 def table2d_c(sect, prefix, comment):

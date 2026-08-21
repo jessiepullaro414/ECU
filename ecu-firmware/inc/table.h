@@ -43,4 +43,12 @@ int32_t table2d_lookup(const uint16_t *x_axis, uint8_t nx,
                        const int16_t *cells,
                        uint16_t x, uint16_t y);
 
+/* One-dimensional version, for the curves that depend on a single
+ * quantity - injector dead time and coil dwell against battery voltage.
+ * Same axis walk, same clamping, same signed arithmetic; it exists so
+ * those two do not each grow a private copy of the interpolation, which
+ * is exactly how the VE and spark tables would have diverged. */
+int32_t table1d_lookup(const uint16_t *axis, uint8_t n,
+                       const int16_t *cells, uint16_t x);
+
 #endif /* TABLE_H */

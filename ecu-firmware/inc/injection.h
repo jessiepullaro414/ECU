@@ -135,6 +135,20 @@ uint16_t injection_crank_rpm(void);
  * between two teeth, which at 6000 rpm on a 36-tooth wheel is 278 us.
  * iat_centiC is hundredths of a degree C, matching iat_sensor.h. */
 void injection_set_fuel_inputs(uint16_t map_kpa, int32_t iat_centiC);
+
+/* injection_set_battery_mv(): publishes the measured battery voltage,
+ * which sets BOTH injector dead time and coil dwell. Same hand-off as
+ * the fuelling inputs - the ISR cannot do a blocking ADC read.
+ *
+ * Kept separate from injection_set_fuel_inputs() deliberately: battery
+ * voltage is not a fuelling input, it is a property of the actuators,
+ * and folding it in would have made that call mean two things. */
+void injection_set_battery_mv(uint16_t mv);
+
+/* Injector opening delay in microseconds at the published battery
+ * voltage. Exposed for diagnostics; injection_arm_cylinder() already
+ * adds it to every pulse. */
+uint16_t injection_dead_time_us(void);
 int injection_crank_synced(void);
 
 /* Real INTC vector handlers for this board's two real, shared eMIOS_0

@@ -37,3 +37,9 @@ uint16_t ignition_spark_angle(uint16_t tdc_angle_deg, int16_t advance_deg) {
     }
     return (uint16_t)angle;
 }
+
+uint16_t ignition_dwell_us(uint16_t vbatt_mv) {
+    int32_t us = table1d_lookup(DWELL_MV, (uint8_t)DWELL_COUNT,
+                                DWELL_US, vbatt_mv);
+    return (uint16_t)((us < 0) ? 0 : us);
+}

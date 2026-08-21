@@ -1130,6 +1130,57 @@ match value stays inside `1..65535`; pulses that straddle the counter
 wrap (`on=57605 off=2243`) still measure the correct width; and 30
 events arm per run at every speed from 450 to 6000 rpm.
 
+### Dead time and dwell follow battery voltage
+
+Both were single figures, and `config/engine.toml` already said in both
+places that they wanted a voltage table. They are 1-D curves against
+VBATT now, interpolated by `table1d_lookup()` - the same axis walk and
+clamping the 2-D tables use, factored out so these two did not each grow
+a private copy.
+
+**Both are functions of supply voltage for the same physical reason.** An
+injector has to build enough solenoid current to overcome the spring and
+fuel pressure holding the pintle shut; a coil has to build primary
+current to its design figure. Current in an inductor rises at V/L, so a
+sagging rail makes both take proportionally longer. Measured against the
+shipped placeholder curves:
+
+| | 8 V (starter dragging) | 14 V (charging) | ratio |
+|---|---:|---:|---:|
+| dead time | 1700 µs | 880 µs | 1.93× |
+| dwell | 5000 µs | 2800 µs | 1.79× |
+
+The old fixed 1000 µs dead time would have **under-fuelled by 700 µs per
+injection at 8 V** — every cylinder, every cycle, precisely when the
+starter is dragging the rail down and the engine can least afford it.
+
+A failed VBATT reading falls back to the nominal 14 V rather than zero,
+in `main.c` and again as the module's own default. Zero volts would read
+the *longest* entry off both curves and command a hugely overlong pulse
+with an overcharged coil — the failure has to fall towards nominal, not
+towards maximum.
+
+**The generator checks the physics, not just the shape.** Both curves
+must fall as voltage rises; a rising segment is not a tuning choice, it
+is backwards:
+
+```
+ignition.dwell: 2500 us at 6.0 V but 3000 us at 8.0 V. Current builds
+FASTER from a higher supply, so this curve must fall as voltage rises.
+```
+
+**This also closed the high-rpm dwell ceiling properly.** Dwell is a
+fixed time while the gap between firings shrinks with speed, so above
+about 8000 rpm the coil cannot fully charge in the time available. The
+scheduler now **shortens dwell to fit** rather than refusing to schedule:
+a weaker spark still fires, whereas refusing would act as an abrupt and
+undocumented rev limiter. Host-verified — full 2.80 ms up to 7000 rpm,
+then 2.69 ms at 8000 and 2.40 ms at 9000.
+
+The curves are **placeholder shapes, not measurements**, flagged like the
+VE and spark tables. Real numbers come from the injector's and coil's own
+datasheets, or from a bench rig.
+
 ### The arming lead is sized from dwell, not fixed as an angle
 
 The first version used a fixed 180-degree lead, and it could not schedule

@@ -49,4 +49,15 @@ int16_t ignition_advance_deg(uint16_t rpm, uint16_t map_kpa);
  * Both angles are in crank degrees, 0..ENGINE_CYCLE_DEGREES-1. */
 uint16_t ignition_spark_angle(uint16_t tdc_angle_deg, int16_t advance_deg);
 
+/* Coil charge time in microseconds for the current battery voltage.
+ * Dwell is however long the primary current takes to reach the coil's
+ * design figure, and current in an inductor rises at V/L, so a sagging
+ * supply needs proportionally longer. A single figure would overcharge
+ * the coil at 14 V and undercharge it at 9 V.
+ *
+ * Clamps to the curve's ends rather than extrapolating - past the
+ * measured range there is no data, and extrapolating dwell either cooks
+ * the coil or produces no spark. */
+uint16_t ignition_dwell_us(uint16_t vbatt_mv);
+
 #endif /* IGNITION_H */

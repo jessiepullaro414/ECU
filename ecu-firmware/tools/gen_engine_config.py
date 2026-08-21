@@ -54,6 +54,7 @@ def validate(cfg):
     eng = cfg["engine"]
     crank = cfg["crank"]
     tb = cfg["timebase"]
+    ign = cfg["ignition"]
 
     cyl = eng["cylinders"]
     if not (1 <= cyl <= 8):
@@ -145,44 +146,72 @@ def validate(cfg):
     # cylinders, where the firing interval is small: a V12 has only 60
     # degrees between firings, which a 46-degree advance plus coil dwell
     # can genuinely exceed.
-    # --- can the counter bus even REACH the scheduling horizon? -------
-    # Every match is scheduled as an absolute value on a 16-bit counter
-    # bus running at the configured tick rate, so the bus spans a fixed
-    # WALL-CLOCK window. The arming lead is an ANGLE, and at low rpm an
-    # angle is a long time. Below some engine speed the lead simply does
-    # not fit in the counter and injection_arm_cylinder() refuses to
-    # schedule - which is safe, but silent, and cranking is exactly where
-    # it bites. Surfaced here with the real numbers rather than left to
-    # be discovered on a bench.
+    # --- how slowly can the engine turn and still be scheduled? -------
+    # Match values are absolute positions on a 16-bit counter bus, so the
+    # bus spans a fixed wall-clock window and a scheduling delta larger
+    # than that cannot be expressed. The arming lead is sized from the
+    # DWELL rather than fixed as an angle (arming_lead_deg() in
+    # injection.c), which is what keeps the delta small at low rpm - a
+    # fixed 180-degree lead needed 200 ms at cranking speed to cover a
+    # 3 ms coil charge, and could not be scheduled at all below ~458 rpm.
+    #
+    # Mirrors the firmware's own arithmetic rather than a closed form, so
+    # the two cannot drift apart.
     tick_hz = 60000000 // tb["emios_prescaler"]
     modulus = 65535
-    window_s = modulus / tick_hz
-    lead_deg = 2 * (cfg["engine"]["cycle_degrees"] // cfg["engine"]["cylinders"])
-    min_rpm = lead_deg / (6.0 * window_s)
-    if min_rpm > 250:
-        # tick_hz needed so the lead fits at 200 rpm:
-        #   200 = lead_deg / (6 * modulus / tick_hz)
-        #   tick_hz = 200 * 6 * modulus / lead_deg
-        want = int(round(60000000 * lead_deg / (200 * 6.0 * modulus)))
-        want = min(want, 256)          # GPRE is 8 bits, ratio = GPRE + 1
-        print(f"  NOTE: at {tick_hz} Hz the counter bus spans "
-              f"{window_s * 1000:.1f} ms, so a {lead_deg} deg arming lead only "
-              f"fits above about {min_rpm:.0f} rpm.")
-        print(f"        Cranking (150-250 rpm) is BELOW that, so no cylinder "
-              f"would be scheduled while starting.")
-        print(f"        A prescaler of about {want} (tick rate "
-              f"{60000000 // want} Hz) would cover 200 rpm, at the cost of "
-              f"coarser rpm resolution.")
-
-    max_adv = max(max(r) for r in cfg["ignition"]["advance"]["table"])
+    deg_per_tooth = 360 // crank["teeth"]
     interval = cfg["engine"]["cycle_degrees"] // cfg["engine"]["cylinders"]
-    if max_adv >= interval:
+    dwell_ticks = ign["dwell_us"] * tick_hz // 1000000
+    max_adv = max(max(r) for r in cfg["ignition"]["advance"]["table"])
+
+    def delta_at(rpm):
+        tooth_ticks = (60.0 * tick_hz) / (rpm * crank["teeth"])
+        teeth = -(-dwell_ticks // int(tooth_ticks)) + 1      # ceil, + margin
+        lead = teeth * deg_per_tooth + max_adv
+        lead = -(-lead // deg_per_tooth) * deg_per_tooth      # up to a tooth
+        cap = min(2 * interval, cfg["engine"]["cycle_degrees"] - deg_per_tooth)
+        lead = min(lead, cap)
+        return (lead - max_adv) / deg_per_tooth * tooth_ticks
+
+    floor_rpm = None
+    for rpm in range(40, 1200, 5):
+        if delta_at(rpm) < modulus:
+            floor_rpm = rpm
+            break
+    if floor_rpm is None or floor_rpm > 250:
+        print(f"  WARNING: the counter bus ({modulus / tick_hz * 1000:.0f} ms at "
+              f"{tick_hz} Hz) cannot express the arming lead below "
+              f"{floor_rpm or '>1200'} rpm - above real cranking speed.")
+    else:
+        print(f"  schedulable from {floor_rpm} rpm up "
+              f"(counter bus spans {modulus / tick_hz * 1000:.0f} ms; "
+              f"lead uses {100 * delta_at(200) / modulus:.0f}% of it at 200 rpm)")
+
+    interval = cfg["engine"]["cycle_degrees"] // cfg["engine"]["cylinders"]
+    # The arming lead is capped at two firing intervals, and the spark
+    # sits `advance` degrees inside it - so an advance at or beyond the
+    # cap could never be scheduled ahead of itself.
+    lead_cap = min(2 * interval, cfg["engine"]["cycle_degrees"] - deg_per_tooth)
+    if max_adv >= lead_cap:
         raise ConfigError(
-            f"ignition.advance peaks at {max_adv} deg BTDC but cylinders fire "
-            f"every {interval} deg, which is also the scheduling lead. The "
-            f"spark would have to be scheduled before its cylinder was armed. "
-            f"Reduce the advance, or widen the arming lead (ARM_LEAD_DEG in "
-            f"src/injection.c) and re-check the timing budget.")
+            f"ignition.advance peaks at {max_adv} deg BTDC but the arming lead "
+            f"is capped at {lead_cap} deg (two firing intervals). The spark "
+            f"would have to be scheduled before its cylinder was armed. Reduce "
+            f"the advance, or raise ARM_LEAD_CAP_DEG in src/injection.c and "
+            f"re-check the timing budget.")
+
+    # Ceiling: dwell is a fixed time, so above some speed it no longer
+    # fits inside the lead however the lead is sized. That is a real
+    # physical limit, and the reason a dwell-vs-rpm table exists.
+    ceil_rpm = None
+    for rpm in range(1000, 15000, 50):
+        if delta_at(rpm) <= dwell_ticks:
+            ceil_rpm = rpm
+            break
+    if ceil_rpm is not None:
+        print(f"  dwell of {ign['dwell_us']} us stops fitting the lead above "
+              f"about {ceil_rpm} rpm - shorten dwell there (a dwell-vs-rpm "
+              f"table) if that is inside your rev range")
 
     pre = tb["emios_prescaler"]
     if not (1 <= pre <= 256):
@@ -339,8 +368,7 @@ def main():
     sflat = [v for row in sp["table"] for v in row]
     interval = cfg["engine"]["cycle_degrees"] // cfg["engine"]["cylinders"]
     print(f"  spark table {len(sp['map_axis'])} MAP x {len(sp['rpm_axis'])} RPM, "
-          f"{min(sflat)}-{max(sflat)} deg BTDC "
-          f"(peak fits the {interval} deg scheduling lead)")
+          f"{min(sflat)}-{max(sflat)} deg BTDC")
     print(f"  {cfg['fuel']['displacement_cc']} cc, "
           f"{cfg['fuel']['injector_cc_per_min']} cc/min injectors, "
           f"target AFR {cfg['fuel']['target_afr_x10'] / 10:.1f}")

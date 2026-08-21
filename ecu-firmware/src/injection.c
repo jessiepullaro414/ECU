@@ -162,25 +162,14 @@ static const uint8_t firing_order[ENGINE_CYLINDERS] = ENGINE_FIRING_ORDER;
  * of this eMIOS setup, which needs bench measurement on hardware that
  * does not exist yet. One interval is a defensible starting point, not
  * a measured optimum. */
-/* TWO firing intervals, not one, and the reason is concrete rather
- * than a safety margin. Coil dwell is a fixed TIME, but the gap between
- * firings shrinks with engine speed: on this eight-cylinder engine at
- * 6000 rpm cylinders fire every 2.5 ms while the configured dwell is
- * 3 ms. The coil for the next cylinder therefore has to start charging
- * BEFORE the current one has fired - unavoidable, not a tuning error -
- * and a one-interval lead simply cannot express that. Arming a whole
- * interval earlier gives 5 ms at 6000 rpm, comfortably more than dwell
- * plus the largest advance in the table.
+/* CEILING on the arming lead, not the lead itself - see
+ * arming_lead_deg() below for how the real lead is chosen.
  *
- * Overlapping like this is safe because every cylinder owns its own
- * eMIOS channel, so charging coil N+1 while coil N is still armed
- * touches two independent comparators. It would NOT be safe if
- * cylinders shared a channel.
- *
- * Found by host simulation, which showed arming silently failing above
- * 3000 rpm - the range guard in injection_arm_cylinder() was correctly
- * refusing to schedule a spark the coil could not be charged for. */
-#define ARM_LEAD_DEG  (2u * ENGINE_FIRING_INTERVAL_DEG)
+ * Two firing intervals is as far ahead as it is ever useful to look.
+ * Beyond that the scan would start selecting a cylinder more than two
+ * events away, and on an engine with few cylinders it could wrap past a
+ * whole cycle and re-select the one just fired. */
+#define ARM_LEAD_CAP_DEG  (2u * ENGINE_FIRING_INTERVAL_DEG)
 
 /* Real, and now complete on the unit side: the caller supplies
  * microseconds, this converts to the eMIOS ticks the hardware actually
@@ -195,6 +184,67 @@ static const uint8_t firing_order[ENGINE_CYLINDERS] = ENGINE_FIRING_ORDER;
  * remember to add it - forgetting it makes the engine run lean at every
  * load point. Ignition dwell is NOT adjusted the same way: dwell is
  * already the real coil charge time, with no equivalent offset. */
+/* How far ahead of the crank to arm a cylinder, in whole crank degrees.
+ *
+ * THE LEAD IS A TIME PROBLEM WEARING AN ANGLE'S CLOTHES. Coil dwell is
+ * a fixed duration - 3 ms is 3 ms at any engine speed - but the crank
+ * covers wildly different angles in 3 ms depending on how fast it is
+ * turning. A FIXED angle lead therefore has to be sized for the worst
+ * case (high rpm, where 3 ms is over 100 degrees) and is then absurdly
+ * long everywhere else: at 150 rpm a 180-degree lead means scheduling
+ * 200 ms ahead to cover a 3 ms coil charge.
+ *
+ * That is what put cranking out of reach. Match values are absolute
+ * positions on a 16-bit counter bus spanning 65.5 ms, so a 200 ms lead
+ * simply cannot be expressed, and injection_arm_cylinder() refused to
+ * schedule anything below about 458 rpm - which is every real cranking
+ * speed. Slowing the timebase would have bought range at the cost of
+ * resolution; sizing the lead from the dwell instead costs nothing and
+ * uses LESS counter range at every speed, cranking included.
+ *
+ * Three terms, and each was found the hard way by simulating the
+ * alternatives before writing this:
+ *
+ *   - whole teeth to span the dwell, rounded UP. Partial teeth cannot
+ *     be selected: the scan below tests an exact integer angle.
+ *   - the advance, because the spark sits that far BEFORE TDC and
+ *     therefore eats into the lead. Omitting this looks fine at
+ *     cranking and silently starves the coil above 500 rpm.
+ *   - one tooth of margin for interrupt latency.
+ *
+ * The result is rounded up to a whole tooth so it lands exactly on the
+ * one-tooth-wide selection window, and capped. Keeping the SELECTION in
+ * exact integer degrees matters: an earlier attempt expressed the whole
+ * window in ticks instead, and truncating the tooth period made the
+ * window a hair narrower than the step it was testing, so events were
+ * silently skipped at some speeds and not others. */
+static uint16_t arming_lead_deg(uint32_t dwell_ticks, int16_t advance_deg) {
+    uint32_t cap = ARM_LEAD_CAP_DEG;
+    /* Never look so far ahead that the target wraps the whole cycle and
+     * re-selects the cylinder that just fired. Matters only on very low
+     * cylinder counts, where a firing interval is a large fraction of
+     * the cycle. */
+    if (cap > (ENGINE_CYCLE_DEGREES - CRANK_DEGREES_PER_TOOTH)) {
+        cap = ENGINE_CYCLE_DEGREES - CRANK_DEGREES_PER_TOOTH;
+    }
+    if (normal_period_ticks == 0u) {
+        return (uint16_t)cap;      /* no period measured yet */
+    }
+
+    uint32_t teeth = (dwell_ticks + normal_period_ticks - 1u)
+                     / normal_period_ticks;      /* dwell, rounded up */
+    teeth += 1u;                                 /* latency margin */
+
+    uint32_t lead = (teeth * CRANK_DEGREES_PER_TOOTH)
+                  + (uint32_t)((advance_deg > 0) ? advance_deg : 0);
+
+    /* Round up to a whole tooth so the selection window can land on it. */
+    lead = ((lead + CRANK_DEGREES_PER_TOOTH - 1u) / CRANK_DEGREES_PER_TOOTH)
+           * CRANK_DEGREES_PER_TOOTH;
+
+    return (uint16_t)((lead > cap) ? cap : lead);
+}
+
 void injection_init_outputs(void) {
     /* Walks this file's own channel tables rather than exposing them,
      * which also means the module/base pairing for IGN6/7/8 - the three
@@ -322,9 +372,11 @@ void crank_capture_isr(uint32_t capture_time) {
     last_crank_capture = capture_time;
     crank_capture_valid = 1;
 
+    uint8_t after_gap = 0u;
     if (gap_detected(crank_period_ticks_val, prev_crank_period_ticks)) {
         /* This edge is the first real tooth after the gap - the one
          * angularly-known point on the wheel. */
+        after_gap = 1u;
         normal_period_ticks = crank_period_ticks_val
                               / (CRANK_WHEEL_MISSING + 1u);
         tooth_index = 0u;
@@ -363,15 +415,48 @@ void crank_capture_isr(uint32_t capture_time) {
                      + ENGINE_CYCLE_DEGREES - CRANK_GAP_TO_TDC_DEG)
                     % ENGINE_CYCLE_DEGREES;
 
-    /* Arm whichever cylinder comes due one lead-window from here. The
-     * window is half a tooth wide on either side so exactly one tooth
-     * can match, whatever the wheel resolution. */
-    uint32_t target = (cycle_pos_deg + ARM_LEAD_DEG) % ENGINE_CYCLE_DEGREES;
+    /* Arm whichever cylinder comes due one lead-window from here.
+     *
+     * THE WINDOW MUST BE AS WIDE AS THE ARC ACTUALLY TRAVERSED since the
+     * previous tooth, which is NOT always one tooth: across the wheel's
+     * gap the crank covers (missing + 1) tooth intervals in a single
+     * edge-to-edge step. A fixed one-tooth window silently drops any
+     * cylinder whose arming angle falls in the gap - on this 36-1 wheel
+     * the angles 350 and 710 degrees are never reported at all, so a
+     * cylinder needing either of them simply never fires.
+     *
+     * That was a latent bug, not one the adaptive lead introduced. The
+     * old fixed 180-degree lead happened to place every cylinder's
+     * arming angle on a real tooth; a 100-degree lead - which is what
+     * the dwell calls for at 3000 rpm - puts two of the eight squarely
+     * in the gap. Simulation caught it as a drop from 16 events to 12.
+     *
+     * Widening to the real traversed arc fixes it for any lead, any
+     * wheel pattern, and any cylinder count. */
+    uint32_t window_deg = after_gap
+        ? ((uint32_t)(CRANK_WHEEL_MISSING + 1u) * CRANK_DEGREES_PER_TOOTH)
+        : (uint32_t)CRANK_DEGREES_PER_TOOTH;
+    /* Advance depends only on the operating point, not on which
+     * cylinder is due, so it is computed once here - the lead needs it
+     * too, and calling the table lookup per candidate cylinder would
+     * have done the same work eight times in an ISR. */
+    uint16_t rpm_now      = injection_crank_rpm();
+    int16_t  advance_now  = ignition_advance_deg(rpm_now, fuel_map_kpa);
+    uint32_t dwell_ticks  = us_to_ticks(IGNITION_DWELL_US, ECU_EMIOS_TICK_HZ);
+    uint32_t lead         = arming_lead_deg(dwell_ticks, advance_now);
+
+    uint32_t target = (cycle_pos_deg + lead) % ENGINE_CYCLE_DEGREES;
     for (uint8_t i = 0u; i < ENGINE_CYLINDERS; i++) {
         uint32_t fire_at = fire_angle_for_order_index(i);
-        uint32_t delta   = (fire_at + ENGINE_CYCLE_DEGREES - target)
+        /* Has the target just SWEPT PAST this cylinder's TDC? The test
+         * has to be this way round, not "is the TDC ahead of target".
+         * They agree only when the arming angle lands exactly on a
+         * tooth; the moment it does not - and across the wheel's gap it
+         * cannot - the target leaps over the TDC and an "is it ahead"
+         * test never fires again for that cylinder. */
+        uint32_t delta   = (target + ENGINE_CYCLE_DEGREES - fire_at)
                            % ENGINE_CYCLE_DEGREES;
-        if (delta < CRANK_DEGREES_PER_TOOTH) {
+        if (delta < window_deg) {
             cylinder_event_t event;
             event.cylinder       = firing_order[i];   /* 1-based, see injection.h */
             /* cylinder_event_t.pulse_width_us is 16-bit, so clamp
@@ -381,26 +466,15 @@ void crank_capture_isr(uint32_t capture_time) {
              * never see the real value. 65.5 ms is past any real
              * injector command - reaching it means a misconfigured
              * injector flow rate, not a running engine. */
-            uint32_t pw = fuel_pulse_width_us(injection_crank_rpm(),
-                                              fuel_map_kpa,
+            uint32_t pw = fuel_pulse_width_us(rpm_now, fuel_map_kpa,
                                               fuel_iat_centiC);
             event.pulse_width_us = (pw > 65535u) ? 65535u : (uint16_t)pw;
             event.dwell_us       = IGNITION_DWELL_US;
 
-            /* Spark advance, at last. fire_at is this cylinder's TDC;
-             * the spark belongs ADVANCE degrees before it. Until this
-             * existed every cylinder was scheduled to fire exactly at
-             * TDC, which makes no useful power and invites detonation.
-             *
-             * NOTE, and it is the honest limit of this change: the
-             * angle is computed and carried correctly, but the eMIOS
-             * output path cannot yet place a pulse AT an angle - see
-             * injection_arm_cylinder() and the README. Consuming this
-             * field is what that work unblocks. */
-            int16_t advance = ignition_advance_deg(injection_crank_rpm(),
-                                                   fuel_map_kpa);
+            /* fire_at is this cylinder's TDC; the spark belongs
+             * ADVANCE degrees before it. */
             event.fire_angle_deg = ignition_spark_angle((uint16_t)fire_at,
-                                                        advance);
+                                                        advance_now);
             injection_arm_cylinder(&event);
             break;   /* events are evenly spaced; at most one per tooth */
         }

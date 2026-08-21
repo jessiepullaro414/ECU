@@ -1130,34 +1130,76 @@ match value stays inside `1..65535`; pulses that straddle the counter
 wrap (`on=57605 off=2243`) still measure the correct width; and 30
 events arm per run at every speed from 450 to 6000 rpm.
 
-### The remaining gap: cranking does not fit the counter
+### The arming lead is sized from dwell, not fixed as an angle
 
-At 1 MHz the counter bus spans **65.5 ms**, and a 180-degree arming lead
-is a long time at low rpm - below about **458 rpm the lead does not fit
-in the counter at all** and `injection_arm_cylinder()` refuses to
-schedule. Refusing is the safe response, but cranking happens at
-150-250 rpm, so as configured **no cylinder would be scheduled while
-starting the engine.**
+The first version used a fixed 180-degree lead, and it could not schedule
+anything below about **458 rpm** - which is every real cranking speed.
+The obvious fix was to slow the timebase to buy counter range, but that
+was treating a symptom.
 
-The generator now says so with the real numbers rather than leaving it
-to a bench discovery:
+**The lead is a time problem wearing an angle's clothes.** Coil dwell is
+a fixed duration - 3 ms is 3 ms at any speed - while the crank covers
+wildly different angles in 3 ms. A fixed angle lead must be sized for the
+worst case (high rpm, where 3 ms is over 100 degrees) and is then absurd
+everywhere else: at 150 rpm, 180 degrees means scheduling **200 ms ahead
+to cover a 3 ms coil charge**, and the counter bus only spans 65.5 ms.
+
+`arming_lead_deg()` sizes it from the dwell instead - whole teeth to span
+the dwell (rounded up, since the selection test is in exact integer
+degrees), plus the advance, plus one tooth of latency margin. It keeps
+the 1 MHz timebase, keeps full resolution, and uses **less** counter
+range than the fixed lead at every speed:
+
+| rpm | fixed 180 deg | dwell-sized |
+|---:|---:|---:|
+| 150 | **cannot schedule** | 14 % of counter |
+| 200 | **cannot schedule** | 10 % |
+| 500 | 85 % | 19 % |
+| 3000 | 13 % | 7 % |
+| 7000 | 5 % | 5 % |
+
+The generator reports both ends, computed with the firmware's own
+arithmetic so the two cannot drift:
 
 ```
-NOTE: at 1000000 Hz the counter bus spans 65.5 ms, so a 180 deg arming
-      lead only fits above about 458 rpm.
-      Cranking (150-250 rpm) is BELOW that, so no cylinder would be
-      scheduled while starting.
-      A prescaler of about 137 (tick rate 437956 Hz) would cover 200 rpm,
-      at the cost of coarser rpm resolution.
+schedulable from 65 rpm up (counter bus spans 66 ms; lead uses 31% of it at 200 rpm)
+dwell of 3000 us stops fitting the lead above about 7450 rpm - shorten
+dwell there (a dwell-vs-rpm table) if that is inside your rev range
 ```
 
-This is a genuine tradeoff rather than an oversight, which is why it is
-flagged instead of silently changed. A prescaler of 138 gives 2.3 us per
-tick and a 150 ms window, covering 199 rpm - but rpm is derived from a
-single tooth period, and at 6000 rpm that period drops from 278 ticks to
-64, coarsening speed resolution roughly fourfold. Averaging the period
-over several teeth would recover most of it. The alternative is to keep
-1 us resolution and schedule cranking differently.
+That upper bound is real physics, not a software limit: at 7450 rpm the
+gap between firings is shorter than the coil needs, which is exactly why
+a dwell-vs-rpm table exists.
+
+**Two real bugs surfaced while proving this out, and both were latent -
+neither was introduced by the adaptive lead.**
+
+*The selection comparison was backwards.* It asked whether a cylinder's
+TDC was **ahead of** the moving target, when it should ask whether the
+target has just **swept past** the TDC. The two agree only when the
+arming angle lands exactly on a tooth - which the old 180-degree lead
+always did, by luck. Any other lead makes the target step over a TDC, and
+an "is it ahead" test then never fires for that cylinder again.
+
+*The selection window was one tooth wide, but the crank does not always
+advance one tooth.* Across the wheel's gap it covers `missing + 1` tooth
+intervals in a single edge, so on this 36-1 wheel the angles **350 and
+710 degrees are never reported at all**. A cylinder whose arming angle
+falls there simply never fires. The old lead of 180 degrees happened to
+place all eight arming angles on real teeth; a lead of 100 degrees - what
+the dwell calls for at 3000 rpm - puts two of the eight squarely in the
+gap. The window is now as wide as the arc actually traversed.
+
+Both were confirmed necessary by reverting each in isolation against a
+**162-case sweep** (18 speeds x 9 load points, since the lead depends on
+both). With the direction reverted, cylinders double-arm at 1800 and 6600
+rpm. With the window reverted, five cases silently lose **two of eight
+cylinders**. With both in place all 162 cases arm every cylinder exactly
+once per cycle, verified over 21 engine cycles each.
+
+That sweep is the reason it was worth testing across load and not just
+speed: at 60 kPa the bug is invisible, and a speed-only sweep reports
+everything clean.
 
 ### What is still not consumed
 

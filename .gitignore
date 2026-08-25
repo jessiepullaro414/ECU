@@ -3,6 +3,7 @@
 # independent projects (car-parts-shop has its own separate .git repo)
 # and are deliberately excluded here, not just left untracked -
 # this keeps a future `git add -A` from ever sweeping them in by accident.
+/bat2ps1/
 /car-parts-shop/
 /manifold-pcb/
 /manifold-pcb.zip

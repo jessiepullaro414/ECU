@@ -1,0 +1,392 @@
+# =====================================================================
+# PROPOSAL - NOT WIRED TO ANYTHING. Nothing reads this file.
+#
+# A schema sketch for the universal sensor front end. It does not
+# replace config/engine.toml; it proposes what the [sensor.*] section of
+# engine.toml would BECOME if the board gained switchable front ends and
+# an FPGA carrying soft decoders. Delete it freely - it exists to be
+# argued with.
+#
+# THE ENTIRE BOARD DESCRIBED BELOW IS HYPOTHETICAL. Every designator,
+# every bank value, every part choice is invented for this sketch. None
+# of it has been cross-checked against ../ecu-pcb/build_schematic.py,
+# because none of it is on that board. Where a real part would be
+# needed and none has been selected, the comment says PART NOT CHOSEN
+# rather than naming something plausible.
+#
+# ---------------------------------------------------------------------
+# THE ONE IDEA
+#
+# Today a [sensor.x] block fuses three separate facts, because on the
+# real board they are soldered into one:
+#
+#   1. WHICH PIN the sensor is on
+#   2. WHAT THE FRONT END DOES to the signal (divider, pull-up)
+#   3. HOW TO CONVERT the result to engineering units
+#
+# `divider = { r_top = 4700, r_bottom = 4700 }` inside [sensor.map] is
+# fact 2 written down as if it belonged to the sensor. It does not - it
+# belongs to the BOARD. It only looks like a sensor property because
+# that board can only ever be a 2:1 divider.
+#
+# Once the front end is switchable, the three facts have different
+# owners and different lifetimes:
+#
+#   [channel_class.*]  what a KIND of channel is physically capable of.
+#                      Changes when the board is respun.
+#   [channel.*]        which physical pins are which class, and their
+#                      real designators. Cross-checkable against the
+#                      schematic, exactly like `refs` is today.
+#   [sensor.*]         what is plugged in, and what it needs. Changes
+#                      when the user changes a sensor - a config edit,
+#                      no board involved.
+#
+# The generator's new job is the join: prove the sensor's request is
+# ACHIEVABLE on the channel it was assigned to, then emit the mux codes,
+# PGA gain, DAC thresholds and fabric decoder configuration that make it
+# so. Same discipline as today - describe the physical, derive the
+# numbers, never type a derived number - applied one level further out.
+# =====================================================================
+
+
+# =====================================================================
+# FABRIC
+# =====================================================================
+# The soft-decoder budget. Instantiating a decoder costs logic; the
+# generator sums what the [sensor.*] blocks below ask for and refuses a
+# configuration that does not fit. This is the FPGA equivalent of the
+# existing "does full scale fit under vref" check: a physical limit that
+# a config edit can silently blow past, so the generator owns it.
+#
+# ALL LUT FIGURES BELOW ARE ESTIMATES, NOT SYNTHESIS RESULTS. Nothing
+# here has been written in RTL, let alone built. They are order-of-
+# magnitude sanity numbers to make the budget check meaningful, and
+# every one of them should be replaced by a real synthesis report before
+# any of it is believed.
+[fabric]
+part          = "PART NOT CHOSEN"   # flash-based, instant-on, ~7k LUT class
+available_lut = 6900
+reserve_pct   = 20                  # refuse configs above 80% - routing
+
+[fabric.cost_lut]
+# Per-instance estimates. Angle engine and interlocks are unconditional.
+angle_engine   = 1200               # phase accumulator + 32 angle compares
+interlocks     = 400                # max dwell / max on-time / sync-loss kill
+edge           = 60
+frequency      = 90
+pwm_duty       = 110
+sent           = 250
+manchester     = 130
+ak_current     = 210
+quadrature     = 140
+vr_threshold   = 300                # peak tracker + fractional threshold
+knock_bandpass = 800                # per band, configurable centre frequency
+
+
+# =====================================================================
+# CHANNEL CLASSES - what the hardware can physically do
+# =====================================================================
+# One block per KIND of front end. The generator treats these as the
+# closed set of achievable settings: if a sensor asks for a pull-up that
+# is not in the bank, that is an error, not a rounding. The generator
+# cannot invent a resistor.
+
+[channel_class.analog_universal]
+# Class A. The workhorse. clamp -> selectable divider -> selectable
+# pull-up -> PGA -> ADC.
+#
+# Covers ratiometric 0-5V, resistive/NTC, RTD, narrowband and titania
+# O2, and every resistive level or temperature sender. This is the
+# highest coverage-per-dollar block on the board and should be the
+# most-instantiated one by a wide margin.
+#
+# PART NOT CHOSEN for the mux. An 8:1 automotive analog mux is assumed.
+# Its Ron and its leakage at 125C are the two numbers that decide
+# whether the 100k pull-up position is real or decorative - see
+# [validate].leak_error_mv_max below.
+divider_ratios = [ 1, 2, 5, 10 ]     # 0-3.3V / 0-5V / 0-10V / 0-24V
+pullup_ohms    = [ 0, 100, 1000, 4700, 22000, 100000 ]   # 0 = open
+pullup_to_mv   = [ 3300, 5000 ]
+pga_gains      = [ 1, 2, 4, 8, 16 ]
+max_input_v    = 40                  # clamp rating - load dump survival
+
+[channel_class.digital_universal]
+# Class B. clamp -> selectable pull-up -> optional current-sense path ->
+# comparator with DAC-set threshold -> fabric.
+#
+# THIS IS THE CLASS THE FPGA EXISTS FOR. One physical channel, seven
+# decoders, chosen in config. Hall, SENT, PWM, frequency, quadrature and
+# two-wire current sensors all land here on identical hardware.
+#
+# Note `input_modes`. A two-wire current sensor is NOT a Hall variant:
+# it modulates supply current (nominally 7 mA low / 14 mA high) and is
+# read as a voltage across a sense resistor in the SUPPLY leg, not on a
+# signal leg. Different topology, same connector pins, and it is the
+# bucket most standalone ECUs quietly cannot do.
+pullup_ohms   = [ 0, 1000, 4700, 10000 ]
+pullup_to_mv  = [ 5000, 12000 ]
+input_modes   = [ "voltage", "current_loop" ]
+sense_ohms    = 100                  # in-line, current_loop mode only
+threshold_mv  = { min = 100, max = 4000, step = 5 }   # 10-bit DAC
+decoders      = [ "edge", "frequency", "pwm_duty", "sent",
+                  "manchester", "ak_current", "quadrature" ]
+max_input_v   = 40
+
+[channel_class.vr_diff]
+# Class C. Differential AC, for variable-reluctance crank/cam/speed
+# sensors, whose output is millivolts at cranking and can exceed 100 V
+# at redline - which is why this cannot share a clamp with class B.
+#
+# The adaptive threshold moves into fabric: oversample, track the peak,
+# set the threshold at a fraction of it. Doing it in logic rather than
+# in a fixed-function part means the SAME channel also accepts a Hall
+# sensor (fixed threshold, pull-up engaged), which is the difference
+# between "VR crank only" and "any crank sensor anyone sells".
+differential    = true
+max_input_v     = 150
+pullup_ohms     = [ 0, 1000, 4700 ]  # engaged only in hall mode
+threshold_modes = [ "adaptive", "fixed" ]
+decoders        = [ "edge", "frequency", "quadrature" ]
+
+[channel_class.lowlevel_diff]
+# Class D. Microvolt differential behind a high-resolution delta-sigma
+# with its own PGA and a cold-junction reference.
+#
+# THIS CLASS ALREADY EXISTS ON THE REAL BOARD - it is the ADS1118-Q1 EGT
+# path (ads1118.h). It is written down here because the AD8495 ->
+# ADS1118 rework is the precedent for this entire proposal: a
+# fixed-function analog part was replaced by a converter plus software,
+# and the result was more capable, more available, and cheaper to
+# change. Everything below is that same move applied to the rest of the
+# front end.
+differential  = true
+pga_gains     = [ 1, 2, 4, 8, 16, 32, 64 ]
+cold_junction = true
+elements      = [ "type_k", "type_j", "type_n", "type_t",
+                  "pt100", "pt1000", "nernst" ]
+
+[channel_class.charge_amp]
+# Class E. Knock. Piezo charge-mode input, charge amp in hardware
+# because it must be; the BANDPASS moves into fabric so centre frequency
+# is a config value per engine bore, not an RC you soldered for one
+# engine and can never change.
+bands_max = 2
+centre_hz = { min = 3000, max = 20000 }
+
+
+# =====================================================================
+# CHANNELS - which physical pins are which class
+# =====================================================================
+# Board facts. The generator cross-checks `refs` against the schematic
+# exactly as it does today, so config and board still cannot drift.
+# Abbreviated - a real board would list all of them.
+
+[channel.ain0]
+class = "analog_universal"
+refs  = { mux = "U30", pga = "U31", clamp = "D40" }
+
+[channel.ain1]
+class = "analog_universal"
+refs  = { mux = "U30", pga = "U31", clamp = "D41" }
+
+[channel.ain2]
+class = "analog_universal"
+refs  = { mux = "U30", pga = "U31", clamp = "D42" }
+
+[channel.ain3]
+class = "analog_universal"
+refs  = { mux = "U32", pga = "U33", clamp = "D43" }
+
+[channel.ain4]
+class = "analog_universal"
+refs  = { mux = "U32", pga = "U33", clamp = "D44" }
+
+[channel.din0]
+class = "digital_universal"
+refs  = { mux = "U40", comparator = "U41", dac = "U42", sense = "R200" }
+
+[channel.din1]
+class = "digital_universal"
+refs  = { mux = "U40", comparator = "U41", dac = "U42", sense = "R201" }
+
+[channel.vr0]
+class = "vr_diff"
+refs  = { diffamp = "U50", clamp = "D50" }
+
+[channel.lld0]
+class = "lowlevel_diff"
+refs  = { adc = "U19" }              # the real ADS1118-Q1
+
+[channel.knock0]
+class = "charge_amp"
+refs  = { amp = "U20" }
+
+
+# =====================================================================
+# SENSORS - what is plugged in
+# =====================================================================
+# Each block names a channel and DESCRIBES THE SENSOR. It does not
+# specify mux codes, gains or thresholds: those are derived, and typing
+# one by hand is the same mistake as the hand-typed
+# `map_sensor.adc_counts_at_max = 3103` that this file's ancestor was
+# written to kill.
+#
+# `pullup = "auto"` is the point of the whole exercise. Given the curve
+# and the bank, the generator picks the pull-up that puts the sensor's
+# usable range across the widest span of the ADC, and reports what it
+# chose and what span it got. That is what makes "any thermistor from
+# any manufacturer" true rather than aspirational - a Bosch NTC, a Denso
+# NTC and a GM NTC differ mostly in resistance decade, which is
+# precisely what the bank exists to absorb.
+
+[sensor.clt]
+channel = "ain0"
+type    = "thermistor"
+curve   = "gm_thermistor"            # from engine.toml's [curve.*]
+pullup  = "auto"
+# Generator emits: chosen pullup, pullup rail, and the achieved ADC span
+# over the curve's endpoints. Warns if the span is under
+# [validate].span_pct_min - a badly matched pull-up does not fail, it
+# quietly throws away resolution, which is worse.
+
+[sensor.iat]
+channel = "ain1"
+type    = "thermistor"
+curve   = "gm_thermistor"
+pullup  = "auto"
+
+[sensor.map]
+channel   = "ain2"
+type      = "linear"
+supply_mv = 5000
+signal_mv = { at_min = 250, at_max = 4750 }   # REAL sensor output swing
+at_min    = 10
+at_max    = 105
+unit      = "kPa"
+supply_ma = 10                       # counted against the 5V rail budget
+# signal_mv replaces the old 0-to-supply assumption. A real ratiometric
+# sensor does not swing rail to rail: 0.25-4.75 V and 0.5-4.5 V are both
+# common, and the difference is a ~10% error at both ends of the range
+# if you assume the wrong one. Stating it also gives the generator the
+# information to pick a PGA gain, and gives the firmware a basis for
+# out-of-range fault detection - a reading BELOW at_min is not a low
+# pressure, it is a broken wire.
+
+[sensor.rail_pressure]
+# GDI high-pressure fuel. On essentially every modern engine this is a
+# SENT sensor, and there is no analog version to fall back to. This
+# single block is the strongest practical argument in the whole
+# proposal: without a soft decoder, no amount of analog cleverness
+# reaches this sensor at all.
+channel      = "din0"
+type         = "sent"
+pullup       = 4700
+pullup_to_mv = 5000
+threshold_mv = "auto"                # derived from pull-up rail
+
+[sensor.rail_pressure.sent]
+# J2716. tick_us is the sensor's nominal tick; the spec permits 1-90 us
+# and the sensor's datasheet states which. Frame is a 56-tick
+# synchronisation/calibration pulse followed by status and data nibbles
+# of 12-27 ticks each, then a CRC nibble.
+tick_us      = 3
+data_nibbles = 6
+crc          = "j2716_2010"
+channels     = [ { name = "pressure", nibbles = [0, 1, 2], unit = "kPa" },
+                 { name = "temp",     nibbles = [3, 4, 5], unit = "0.01C" } ]
+
+[sensor.crank]
+channel            = "vr0"
+type               = "edge"
+element            = "vr"            # or "hall" - same channel, same pins
+threshold_mode     = "adaptive"
+threshold_pct      = 30              # of tracked peak
+threshold_floor_mv = 40              # cranking-speed noise floor
+
+[sensor.cam1]
+# A two-wire current-modulated sensor, on identical hardware to the SENT
+# channel above. Nothing changes physically; the front end selects its
+# current-sense path and fabric instantiates a different decoder.
+channel    = "din1"
+type       = "ak_current"
+input_mode = "current_loop"
+low_ma     = 7
+high_ma    = 14
+# threshold derived: (7+14)/2 mA across sense_ohms = 1.05 V
+
+[sensor.egt1]
+channel = "lld0"
+type    = "thermocouple"
+element = "type_k"
+
+[sensor.knock1]
+channel = "knock0"
+type    = "knock"
+bands   = [ { centre_hz = 6800, bw_hz = 1200 } ]
+# Bore-derived. A different engine is a config edit, not a resistor swap.
+
+[sensor.app1]
+channel        = "ain3"
+type           = "linear"
+supply_mv      = 5000
+signal_mv      = { at_min = 500, at_max = 4500 }
+at_min         = 0
+at_max         = 10000
+unit           = "0.01%"
+redundant_with = "app2"
+
+[sensor.app2]
+# DELIBERATELY DISSIMILAR, and the generator enforces it.
+#
+# On the real board today app1 and app2 are configured identically (both
+# 0->10000 over the same 3103 counts). Two identical channels detect an
+# open circuit and nothing else: a shorted, stuck or cross-connected
+# pedal track reads plausibly on both, and the plausibility check that
+# exists to catch it passes. Production pedals ship a half-slope or
+# inverted second track for exactly this reason.
+#
+# With drive-by-wire on this board, `redundant_with` is not
+# documentation. The generator refuses a redundant pair whose transfer
+# functions are not distinguishable - see
+# [validate].redundant_slope_ratio.
+channel        = "ain4"
+type           = "linear"
+supply_mv      = 5000
+signal_mv      = { at_min = 500, at_max = 2500 }   # half slope
+at_min         = 0
+at_max         = 10000
+unit           = "0.01%"
+redundant_with = "app1"
+
+
+# =====================================================================
+# VALIDATION THRESHOLDS
+# =====================================================================
+# The rules the generator enforces. Numbers live here rather than in the
+# generator so that relaxing one is a visible, reviewable config change
+# and not an edit buried in Python.
+[validate]
+# Existing rule, unchanged in spirit: full scale must fit under vref.
+# Now checked against the SELECTED divider, per channel.
+headroom_mv = 200
+
+# A pull-up that puts the whole usable range into 8% of the ADC span is
+# legal and useless. Warn below this.
+span_pct_min = 25
+
+# Worst-case mux leakage error at 125 C through the selected pull-up.
+# This is what decides whether the 100k bank position is real. Needs the
+# chosen mux's real leakage spec - PART NOT CHOSEN, so this number is
+# currently a placeholder with nothing behind it.
+leak_error_mv_max = 2
+
+# Redundant pairs must have transfer functions that differ by at least
+# this ratio in slope, or be opposite in sign. Identical pairs are
+# refused outright.
+redundant_slope_ratio = 1.5
+
+# Sum of every ratiometric sensor's supply_ma against the 5 V sensor
+# rail's real capability. Adding sensors in config can overrun a
+# regulator that was sized for the old sensor set, and nothing else in
+# the toolchain would notice.
+sensor_rail_ma = 250

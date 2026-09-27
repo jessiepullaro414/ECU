@@ -1264,6 +1264,125 @@ one would be worse than saying this.
 
 
 
+## Redundancy that can actually fail
+
+The board carries two pedal channels and two throttle channels so a
+single sensor failure can be caught by disagreement — on drive-by-wire
+nothing mechanical links the pedal to the plate, so a sensor that lies
+is a throttle that opens when the driver did not ask.
+
+**The check would have been worth nothing as configured.** `app1`/`app2`
+and `tps1`/`tps2` were identical — same band, same slope, same units.
+Two channels with the same transfer function detect an open circuit and
+nothing else: a stuck track, a track shorted to its neighbour, or a
+cross-connected harness reads plausibly on *both*, the two agree, and
+the comparison passes. A redundancy check that cannot fail is worse than
+none, because it is believed. Production pedals ship a deliberately
+dissimilar second track for exactly this reason.
+
+So A3 became three things, not one.
+
+### 1. Sensors have a signal band, not a rail-to-rail assumption
+
+The linear kernel assumed 0 V → minimum and supply → maximum. Real
+ratiometric sensors swing about 0.5–4.5 V, and the difference is not
+cosmetic:
+
+| MAP sensor output | firmware said | truth |
+|---|---:|---:|
+| 0.5 V (its minimum) | 19.5 kPa | 10 kPa |
+| 4.5 V (its maximum) | 95.5 kPa | 105 kPa |
+
+~10 % at both ends. The worse half is that **a broken wire pulls the pin
+to 0 V and read as a perfectly valid 10 kPa** — there was no way to tell
+"minimum pressure" from "disconnected" on any linear channel.
+
+`signal_mv` states the real swing, and a `fault_margin_mv` band outside
+it turns those dead zones into diagnosis: below the band is a broken
+wire or a short to ground, above it is a short to the supply. That is
+precisely *why* sensors are specified to swing 0.5–4.5 V instead of rail
+to rail. Inside the band but past a calibrated endpoint still clamps —
+that is tolerance, not a fault.
+
+### 2. The second track of each pair is deliberately dissimilar
+
+`app2` runs at **half slope** (0.5–2.5 V over the same travel); `tps2`
+is **inverted** (4.5 V closed, 0.5 V open). Inverted is the stronger
+form — no single failure makes a rising track and a falling track agree.
+
+The generator **refuses** a pair whose transfer functions are not
+distinguishable, so this cannot quietly regress:
+
+```
+redundant pair app1/app2 is not distinguishable: slopes differ by only
+1.00x and run the same direction (need 1.5x, or opposite signs). Two
+channels with the same transfer function detect an open circuit and
+nothing else - a stuck or cross-connected track reads plausibly on both
+and the check passes. Give one a half slope or invert it, as production
+pedals do.
+```
+
+It also refuses a linear sensor with no `signal_mv` at all, rather than
+silently reinstating the old assumption.
+
+### 3. The check itself
+
+`plausibility.c` walks the generated pair table, flags a pair whose
+channels are out of band (`PLAUS_FAULT_RANGE`) or which disagree by more
+than the configured tolerance (`PLAUS_FAULT_DISAGREE`), and **latches**.
+Latching is deliberate: an intermittent connection that disagrees for
+one sweep in a hundred is exactly the fault worth catching, and a
+live-only flag would read clean by the time anyone looked.
+
+Host-verified, including the case the old configuration could not catch
+— a **cross-wired pedal harness**, where both pins carry track 1's
+signal. With identical tracks the two channels read the same and agree
+perfectly; with a half-slope second track they cannot.
+
+**It detects and latches; it does not yet act.** There is no throttle
+controller — the MC33926 H-bridge sits on the board unused — so nothing
+can drop throttle authority in response. The rule that controller must
+follow is written at the top of `plausibility.c` rather than left to be
+rediscovered: limp position on a pedal fault, cut drive on a throttle
+fault, and **never** fall back to whichever channel still looks healthy,
+because the whole point of the pair is that one reading cannot be
+trusted.
+
+## Host tests
+
+`python tools/run_host_tests.py`, and part of every `buildWholeProject.py`
+run.
+
+Nothing here can execute on the target — there is no board — so the only
+way to run any of it is to compile the portable modules natively and
+drive them with a hardware stub. That loop has caught, in order: a
+`uint64_t` air-mass overflow that would have produced plausible-looking
+wrong pulse widths; a cylinder off-by-one that wrote an eMIOS register
+offset **into the flash boot sector**; a crash inside a safety check's
+own error path; a scheduling window one tooth too narrow that silently
+dropped two of eight cylinders; and a comparison written backwards that
+only worked because one arming angle happened to land on a real tooth.
+
+Every one of those was invisible to review and invisible to the
+compiler.
+
+They used to be written to a scratch directory, which is wiped between
+sessions — so each of those bugs was found by a test that no longer
+existed the next time anyone looked. They live in `test/` now. A
+regression that has to be re-derived is not a regression test.
+
+| test | covers |
+|---|---|
+| `test_sensors.c` | conversion kernels, checked against the *retired* CLT/IAT drivers |
+| `test_tables.c` | VE, spark, dwell curves; integer fuel path vs floating-point physics |
+| `test_plausibility.c` | redundant-pair faults, including the cross-wired harness |
+| `test_scheduling.c` | 162 cases — 18 speeds × 9 loads — every cylinder armed once per cycle |
+
+The scheduling sweep covers **both** axes on purpose: the arming lead
+depends on dwell *and* advance, so a lead that lands cleanly at one load
+can land on the trigger wheel's missing tooth at another. A speed-only
+sweep reports everything clean while two of eight cylinders never fire.
+
 ## Analog sensors
 
 Every analog channel is described in `config/engine.toml` and converted

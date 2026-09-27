@@ -100,22 +100,44 @@ int32_t sensor_convert(sensor_id_t id, uint16_t raw_adc) {
         return curve_lookup(d->curve, d->curve_count, ohms);
     }
 
-    /* linear and voltage are the same arithmetic - the difference is
-     * only where at_full came from (a sensor's declared range, or the
-     * ceiling the divider itself imposes), and the generator has
-     * already resolved that. */
-    if (d->counts_at_full == 0u) {
+    /* linear and voltage share this path; the difference is only where
+     * the band came from. */
+
+    /* OUT OF BAND IS A FAULT, NOT A READING. A working sensor never
+     * leaves its signal band by more than tolerance, so anything past
+     * the fault thresholds is a broken wire, a short to ground, or a
+     * short to the supply. This is the whole reason a ratiometric
+     * sensor is specified to swing 0.5-4.5 V rather than rail to rail -
+     * the dead zones at each end exist so those failures are
+     * distinguishable from a legitimate minimum or maximum. Before the
+     * signal band was described, 0 V read as a valid lowest value and a
+     * severed MAP wire looked exactly like a healthy 10 kPa. */
+    if (raw_adc < d->fault_lo || raw_adc > d->fault_hi) {
         return SENSOR_INVALID;
     }
-    uint32_t counts = raw_adc;
-    if (counts > d->counts_at_full) {
-        counts = d->counts_at_full;     /* above full scale: clamp */
+
+    int32_t lo = (int32_t)d->counts_lo;
+    int32_t hi = (int32_t)d->counts_hi;
+    int32_t c  = (int32_t)raw_adc;
+
+    /* Clamp into the band. lo may be GREATER than hi: an inverted
+     * sensor falls as the measured quantity rises, which is a real
+     * pattern and the strongest form of redundancy for a second
+     * channel, so the ordering cannot be assumed either way. */
+    if (lo <= hi) {
+        if (c < lo) { c = lo; } else if (c > hi) { c = hi; }
+    } else {
+        if (c > lo) { c = lo; } else if (c < hi) { c = hi; }
     }
-    int32_t span = d->at_full - d->at_zero;
-    /* 64-bit intermediate: at_full for the VBATT channel is 25740 and
-     * counts reach 4095, which is fine in 32 bits, but a channel
-     * declared in, say, micrometres or with a wide bipolar range would
-     * not be - and the cost here is nothing. */
-    return d->at_zero + (int32_t)(((int64_t)span * (int64_t)counts)
-                                  / (int64_t)d->counts_at_full);
+
+    int32_t span = hi - lo;             /* negative when inverted */
+    if (span == 0) {
+        return SENSOR_INVALID;          /* generator forbids it */
+    }
+    /* 64-bit intermediate: at_hi reaches 25740 for the battery channel
+     * and the count difference reaches 4095, which fits 32 bits, but a
+     * channel declared over a wider range would not - and it costs
+     * nothing here. */
+    return d->at_lo + (int32_t)(((int64_t)(d->at_hi - d->at_lo)
+                                 * (int64_t)(c - lo)) / (int64_t)span);
 }

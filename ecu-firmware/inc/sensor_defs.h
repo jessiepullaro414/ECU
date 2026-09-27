@@ -48,9 +48,19 @@ typedef struct {
     sensor_kind_t       kind;
     /* linear/voltage: engineering value at 0 counts and at
      * counts_at_full, which is derived from the divider. */
-    int32_t             at_zero;
-    int32_t             at_full;
-    uint16_t            counts_at_full;
+    /* linear/voltage: the engineering values at the two ends
+     * of the sensor's real signal band, and where that band
+     * lands in ADC codes. counts_lo may be GREATER than
+     * counts_hi - an inverted sensor falls as the measured
+     * quantity rises, which is a real and common pattern. */
+    int32_t             at_lo;
+    int32_t             at_hi;
+    uint16_t            counts_lo;
+    uint16_t            counts_hi;
+    /* Outside these the reading is not a value, it is a
+     * broken wire or a short. */
+    uint16_t            fault_lo;
+    uint16_t            fault_hi;
     /* thermistor: pull-up and the curve to walk. */
     uint32_t            pullup_ohms;
     const curve_point_t *curve;
@@ -73,28 +83,48 @@ typedef enum {
 } sensor_id_t;
 
 static const sensor_def_t SENSOR_DEFS[SENSOR_COUNT] = {
-    /* app1   0.01%, uses 76% of ADC range */
-    { "app1", SENSOR_KIND_LINEAR, 0, 10000, 3103u, 0u, 0, 0 },
-    /* app2   0.01%, uses 76% of ADC range */
-    { "app2", SENSOR_KIND_LINEAR, 0, 10000, 3103u, 0u, 0, 0 },
-    /* clt */ { "clt", SENSOR_KIND_THERMISTOR, 0, 0, 0,
+    /* app1   0.01%, band 310..2793 counts, uses 61% of ADC range */
+    { "app1", SENSOR_KIND_LINEAR, 0, 10000, 310u, 2793u, 155u, 2948u, 0u, 0, 0 },
+    /* app2   0.01%, band 310..1552 counts, uses 30% of ADC range */
+    { "app2", SENSOR_KIND_LINEAR, 0, 10000, 310u, 1552u, 155u, 1707u, 0u, 0, 0 },
+    /* clt */ { "clt", SENSOR_KIND_THERMISTOR,
+        0, 0, 0u, 0u, 0u, 4095u,
         1000u, CURVE_GM_THERMISTOR, CURVE_GM_THERMISTOR_COUNT },
-    /* fuelp    kPa, uses 76% of ADC range */
-    { "fuelp", SENSOR_KIND_LINEAR, 0, 1000, 3103u, 0u, 0, 0 },
-    /* iat */ { "iat", SENSOR_KIND_THERMISTOR, 0, 0, 0,
+    /* fuelp    kPa, band 310..2793 counts, uses 61% of ADC range */
+    { "fuelp", SENSOR_KIND_LINEAR, 0, 1000, 310u, 2793u, 155u, 2948u, 0u, 0, 0 },
+    /* iat */ { "iat", SENSOR_KIND_THERMISTOR,
+        0, 0, 0u, 0u, 0u, 4095u,
         4220u, CURVE_GM_THERMISTOR, CURVE_GM_THERMISTOR_COUNT },
-    /* map      kPa, uses 76% of ADC range */
-    { "map", SENSOR_KIND_LINEAR, 10, 105, 3103u, 0u, 0, 0 },
-    /* oilp     kPa, uses 76% of ADC range */
-    { "oilp", SENSOR_KIND_LINEAR, 0, 1000, 3103u, 0u, 0, 0 },
-    /* tps    0.01%, uses 76% of ADC range */
-    { "tps", SENSOR_KIND_LINEAR, 0, 10000, 3103u, 0u, 0, 0 },
-    /* tps1   0.01%, uses 76% of ADC range */
-    { "tps1", SENSOR_KIND_LINEAR, 0, 10000, 3103u, 0u, 0, 0 },
-    /* tps2   0.01%, uses 76% of ADC range */
-    { "tps2", SENSOR_KIND_LINEAR, 0, 10000, 3103u, 0u, 0, 0 },
-    /* vbatt     mV, uses 100% of ADC range */
-    { "vbatt", SENSOR_KIND_VOLTAGE, 0, 25740, 4095u, 0u, 0, 0 },
+    /* map      kPa, band 310..2793 counts, uses 61% of ADC range */
+    { "map", SENSOR_KIND_LINEAR, 10, 105, 310u, 2793u, 155u, 2948u, 0u, 0, 0 },
+    /* oilp     kPa, band 310..2793 counts, uses 61% of ADC range */
+    { "oilp", SENSOR_KIND_LINEAR, 0, 1000, 310u, 2793u, 155u, 2948u, 0u, 0, 0 },
+    /* tps    0.01%, band 310..2793 counts, uses 61% of ADC range */
+    { "tps", SENSOR_KIND_LINEAR, 0, 10000, 310u, 2793u, 155u, 2948u, 0u, 0, 0 },
+    /* tps1   0.01%, band 310..2793 counts, uses 61% of ADC range */
+    { "tps1", SENSOR_KIND_LINEAR, 0, 10000, 310u, 2793u, 155u, 2948u, 0u, 0, 0 },
+    /* tps2   0.01%, band 2793..310 counts, uses 61% of ADC range */
+    { "tps2", SENSOR_KIND_LINEAR, 0, 10000, 2793u, 310u, 155u, 2948u, 0u, 0, 0 },
+    /* vbatt     mV, band 0..4095 counts, uses 100% of ADC range */
+    { "vbatt", SENSOR_KIND_VOLTAGE, 0, 25740, 0u, 4095u, 0u, 4095u, 0u, 0, 0 },
+};
+
+/* ---- Redundant pairs ------------------------------------------
+ * Channels that measure the same physical quantity twice, so a
+ * single failure can be caught by disagreement. The generator
+ * has already refused any pair whose transfer functions are not
+ * distinguishable - identical channels detect an open circuit
+ * and nothing else. */
+typedef struct {
+    sensor_id_t a;
+    sensor_id_t b;
+    int32_t     tolerance;   /* in the pair's own unit */
+} redundant_pair_t;
+
+#define REDUNDANT_PAIR_COUNT 2u
+static const redundant_pair_t REDUNDANT_PAIRS[REDUNDANT_PAIR_COUNT] = {
+    { SENSOR_APP1, SENSOR_APP2, 500 },
+    { SENSOR_TPS1, SENSOR_TPS2, 500 },
 };
 
 #endif /* SENSOR_DEFS_H */

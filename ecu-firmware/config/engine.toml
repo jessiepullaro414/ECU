@@ -286,6 +286,25 @@ table = [
 # calculation - one convention removes it.
 
 [adc]
+# How far outside its signal band a reading may stray before it counts
+# as a fault rather than sensor tolerance. A 0.5-4.5 V sensor with a
+# 250 mV margin is therefore valid over 0.25-4.75 V; below or above that
+# the wire is broken, shorted to ground, or shorted to the supply. This
+# is the standard automotive band and is why sensors are specified to
+# swing 0.5-4.5 V rather than rail to rail in the first place - the dead
+# zones at each end exist to be diagnosable.
+fault_margin_mv = 250
+
+# Redundant pairs must have transfer functions that are distinguishable:
+# slopes differing by at least this ratio, or opposite in sign. Two
+# identical channels detect an open circuit and nothing else.
+redundant_slope_ratio = 1.5
+
+# How far two redundant channels may disagree, in the pair's own
+# engineering unit, before the pair is judged implausible. 500 on a
+# 0..10000 hundredths-of-a-percent scale is 5 percentage points of
+# pedal or throttle travel.
+redundant_tolerance = 500
 # The ADC reference is VDD_HV_ADC0/1, which this board runs at 3.3 V
 # (ecu-pcb, "Power domains"), and ADC_1 is 12-bit.
 vref_mv   = 3300
@@ -358,12 +377,20 @@ pullup_ohms = 4220          # R24, to +3V3
 refs        = { pullup = "R24" }
 
 [sensor.map]
-# 1-bar MAP. Replace min/max for a boost sensor (a 2.5-bar part is
+# 1-bar MAP. Replace at_min/at_max for a boost sensor (a 2.5-bar part is
 # typically 10 and 250) - nothing else needs to change.
+#
+# signal_mv is the sensor's REAL output swing, and stating it does two
+# jobs. It corrects the scale - assuming a 0.5-4.5 V sensor swings
+# 0-5 V puts the reading out by about 9.5 kPa at BOTH ends of a 1-bar
+# range - and it makes a broken wire detectable. Under the old
+# assumption 0 V was a legitimate minimum reading; now anything below
+# the signal band is a fault, because a working sensor never goes there.
 type      = "linear"
 supply_mv = 5000
-at_zero   = 10              # kPa at 0 V
-at_full   = 105             # kPa at supply
+signal_mv = { at_min = 500, at_max = 4500 }
+at_min    = 10              # kPa at signal_mv.at_min
+at_max    = 105             # kPa at signal_mv.at_max
 unit      = "kPa"
 divider   = { r_top = 4700, r_bottom = 4700 }
 refs      = { r_top = "R22", r_bottom = "R94" }
@@ -378,55 +405,85 @@ divider = { r_top = 68000, r_bottom = 10000 }
 refs    = { r_top = "R48", r_bottom = "R49" }
 
 # --- Throttle and pedal ----------------------------------------------
-# PLACEHOLDER RANGES. A real TPS/APP does not swing the full 0-5 V; it
-# typically spans about 0.5-4.5 V, and production practice is to LEARN
-# the closed and wide-open endpoints rather than trust a datasheet. The
-# 0-100% mapping below is a starting point so these channels report
-# something meaningful, not a calibration.
+# RANGES ARE STILL PLACEHOLDERS. A real TPS/APP is calibrated by
+# LEARNING its closed and wide-open endpoints, not by trusting a
+# datasheet, and no learning routine exists yet. The signal bands below
+# are the usual 0.5-4.5 V though, which is what gives these channels
+# broken-wire detection.
+#
+# THE SECOND TRACK OF EACH PAIR IS DELIBERATELY DISSIMILAR, and this is
+# the whole point of the pair. Previously app1/app2 and tps1/tps2 were
+# configured IDENTICALLY, which meant the plausibility check between
+# them could only ever catch an open circuit: a stuck, shorted or
+# cross-connected track reads plausibly on both, the two agree, and the
+# check passes. A redundancy check that cannot fail is worse than none,
+# because it is trusted.
+#
+# Production pedals and throttle bodies ship a deliberately different
+# second track for exactly this reason. Two patterns are in use and one
+# of each is used here:
+#   app2  - HALF SLOPE. Same direction, half the span.
+#   tps2  - INVERTED. Falls as the throttle opens.
+# Inverted is the stronger of the two: no single failure makes a rising
+# track and a falling track agree. The generator refuses a redundant
+# pair whose transfer functions are not distinguishable, so this cannot
+# quietly regress to the old identical configuration.
 [sensor.tps]
 type      = "linear"
 supply_mv = 5000
-at_zero   = 0
-at_full   = 10000           # hundredths of a percent
+signal_mv = { at_min = 500, at_max = 4500 }
+at_min    = 0
+at_max    = 10000           # hundredths of a percent
 unit      = "0.01%"
 divider   = { r_top = 4700, r_bottom = 4700 }
 refs      = { r_top = "R23", r_bottom = "R95" }
 
 [sensor.tps1]
-type      = "linear"
-supply_mv = 5000
-at_zero   = 0
-at_full   = 10000
-unit      = "0.01%"
-divider   = { r_top = 4700, r_bottom = 4700 }
-refs      = { r_top = "R89", r_bottom = "R100" }
+type           = "linear"
+supply_mv      = 5000
+signal_mv      = { at_min = 500, at_max = 4500 }
+at_min         = 0
+at_max         = 10000
+unit           = "0.01%"
+divider        = { r_top = 4700, r_bottom = 4700 }
+refs           = { r_top = "R89", r_bottom = "R100" }
+redundant_with = "tps2"
 
 [sensor.tps2]
-type      = "linear"
-supply_mv = 5000
-at_zero   = 0
-at_full   = 10000
-unit      = "0.01%"
-divider   = { r_top = 4700, r_bottom = 4700 }
-refs      = { r_top = "R90", r_bottom = "R101" }
+# INVERTED second track: 4.5 V closed, 0.5 V wide open.
+type           = "linear"
+supply_mv      = 5000
+signal_mv      = { at_min = 4500, at_max = 500 }
+at_min         = 0
+at_max         = 10000
+unit           = "0.01%"
+divider        = { r_top = 4700, r_bottom = 4700 }
+refs           = { r_top = "R90", r_bottom = "R101" }
+redundant_with = "tps1"
 
 [sensor.app1]
-type      = "linear"
-supply_mv = 5000
-at_zero   = 0
-at_full   = 10000
-unit      = "0.01%"
-divider   = { r_top = 4700, r_bottom = 4700 }
-refs      = { r_top = "R87", r_bottom = "R98" }
+type           = "linear"
+supply_mv      = 5000
+signal_mv      = { at_min = 500, at_max = 4500 }
+at_min         = 0
+at_max         = 10000
+unit           = "0.01%"
+divider        = { r_top = 4700, r_bottom = 4700 }
+refs           = { r_top = "R87", r_bottom = "R98" }
+redundant_with = "app2"
 
 [sensor.app2]
-type      = "linear"
-supply_mv = 5000
-at_zero   = 0
-at_full   = 10000
-unit      = "0.01%"
-divider   = { r_top = 4700, r_bottom = 4700 }
-refs      = { r_top = "R88", r_bottom = "R99" }
+# HALF SLOPE second track: same direction, 0.5-2.5 V over the same
+# travel.
+type           = "linear"
+supply_mv      = 5000
+signal_mv      = { at_min = 500, at_max = 2500 }
+at_min         = 0
+at_max         = 10000
+unit           = "0.01%"
+divider        = { r_top = 4700, r_bottom = 4700 }
+refs           = { r_top = "R88", r_bottom = "R99" }
+redundant_with = "app1"
 
 # --- Pressures -------------------------------------------------------
 # PLACEHOLDER RANGES - no specific sender has been chosen for either.
@@ -436,8 +493,9 @@ refs      = { r_top = "R88", r_bottom = "R99" }
 [sensor.oilp]
 type      = "linear"
 supply_mv = 5000
-at_zero   = 0
-at_full   = 1000
+signal_mv = { at_min = 500, at_max = 4500 }
+at_min    = 0
+at_max    = 1000
 unit      = "kPa"
 divider   = { r_top = 4700, r_bottom = 4700 }
 refs      = { r_top = "R53", r_bottom = "R96" }
@@ -445,8 +503,9 @@ refs      = { r_top = "R53", r_bottom = "R96" }
 [sensor.fuelp]
 type      = "linear"
 supply_mv = 5000
-at_zero   = 0
-at_full   = 1000
+signal_mv = { at_min = 500, at_max = 4500 }
+at_min    = 0
+at_max    = 1000
 unit      = "kPa"
 divider   = { r_top = 4700, r_bottom = 4700 }
 refs      = { r_top = "R54", r_bottom = "R97" }

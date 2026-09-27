@@ -39,6 +39,7 @@
 #include "cj125.h"
 #include "swt.h"
 #include "sensor.h"
+#include "plausibility.h"
 #include "ads1118.h"
 #include "fuel.h"
 #include "engine_config.h"
@@ -493,6 +494,25 @@ static void update_tables(void) {
         vbatt_mv = 14000;
     }
     injection_set_battery_mv((uint16_t)vbatt_mv);
+
+    /* Cross-check the redundant pedal and throttle pairs. The raw array
+     * is indexed by sensor_id_t so plausibility.c can walk the
+     * generated pair table rather than having the pairs hard-coded in
+     * two places; only the channels that appear in a pair need to be
+     * populated, and the rest stay zero.
+     *
+     * DETECTION ONLY, for now. There is no throttle controller yet -
+     * the MC33926 H-bridge sits on the board unused - so nothing can
+     * drop throttle authority in response. The rule that controller
+     * must follow is written down at the top of plausibility.c rather
+     * than left to be rediscovered, and the fault latches so an
+     * intermittent disagreement is still visible afterwards. */
+    uint16_t raw_by_id[SENSOR_COUNT] = { 0 };
+    raw_by_id[SENSOR_APP1] = sensors.app1;
+    raw_by_id[SENSOR_APP2] = sensors.app2;
+    raw_by_id[SENSOR_TPS1] = sensors.tps1;
+    raw_by_id[SENSOR_TPS2] = sensors.tps2;
+    (void)plausibility_update(raw_by_id);
 
     /* Still real and still not done, unchanged by the above: dwell
      * table, ignition timing table, closed-loop O2 trim, boost target

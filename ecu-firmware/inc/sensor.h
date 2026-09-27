@@ -64,9 +64,15 @@
  *   voltage     -> millivolts at the divider input
  *   thermistor  -> hundredths of a degree C
  *
- * Out-of-range inputs clamp to the ends of the configured range rather
- * than extrapolating, for the same reason the VE table clamps: past the
- * calibrated range there is no data, only arithmetic. */
+ * Returns SENSOR_INVALID when the reading falls outside the sensor's
+ * signal band by more than the configured fault margin - a broken wire,
+ * a short to ground, or a short to the supply. A working sensor never
+ * goes there, which is exactly why ratiometric sensors are specified to
+ * swing 0.5-4.5 V instead of rail to rail: the dead zones exist to make
+ * those failures distinguishable from a legitimate extreme reading.
+ *
+ * Inside the band but past a calibrated endpoint, the value clamps
+ * rather than extrapolating - that is sensor tolerance, not a fault. */
 int32_t sensor_convert(sensor_id_t id, uint16_t raw_adc);
 
 /* Thermistor resistance in ohms from a raw count, exposed because it is

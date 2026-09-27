@@ -410,6 +410,11 @@ def main():
     print(f"  {len(sensors)} analog sensors ("
           + ", ".join(f"{n} {k}" for k, n in sorted(kinds.items())) + ")"
           + f", {len(cfg.get('curve', {}))} shared curve(s)")
+    npairs = len(cfg.get("_redundant_pairs", []))
+    if npairs:
+        print(f"  {npairs} redundant sensor pair(s), each verified "
+              f"distinguishable: "
+              + ", ".join(f"{a}/{b}" for a, b in cfg["_redundant_pairs"]))
     if checked:
         print(f"  {checked} divider resistor(s) cross-checked against "
               f"ecu-pcb/build_schematic.py")
@@ -638,49 +643,127 @@ def validate_sensors(cfg):
                     f"sensor.c implements.")
             continue
 
-        # --- linear / voltage: derive full-scale counts ---------------
+        # --- linear / voltage: derive the signal band in ADC counts ---
+        def counts_at(mv):
+            """ADC code for a sensor output of `mv`, through this
+            channel's divider. Divides by the number of STEPS (4096),
+            not the maximum code: the data sheet's Figure 22 defines
+            1 LSB as AVDD/4096."""
+            c = int(round((full + 1) * mv * ratio / vref))
+            return max(0, min(full, c))
+
         if kind == "voltage":
-            # The divider alone sets the ceiling: the input voltage that
-            # lands exactly on the ADC reference.
-            supply_mv = vref / ratio
-            sen["_at_zero"], sen["_at_full"] = 0, int(round(supply_mv))
+            # No sensor swing to speak of - the divider alone sets the
+            # ceiling, and 0 V is a legitimate reading rather than a
+            # fault. Both endpoints and both fault thresholds therefore
+            # sit at the extremes.
+            sig_lo_mv, sig_hi_mv = 0.0, vref / ratio
+            sen["_at_lo"], sen["_at_hi"] = 0, int(round(sig_hi_mv))
             sen["_unit"] = "mV"
+            sen["_fault_lo"], sen["_fault_hi"] = 0, full
         else:
             supply_mv = float(sen["supply_mv"])
-            sen["_at_zero"], sen["_at_full"] = sen["at_zero"], sen["at_full"]
+            band = sen.get("signal_mv")
+            if band is None:
+                raise ConfigError(
+                    f"sensor.{name} is linear but has no signal_mv. State the "
+                    f"sensor's real output swing - assuming it runs rail to "
+                    f"rail mis-scales the reading at both ends AND makes a "
+                    f"broken wire indistinguishable from a minimum reading.")
+            sig_lo_mv, sig_hi_mv = float(band["at_min"]), float(band["at_max"])
+            if sig_lo_mv == sig_hi_mv:
+                raise ConfigError(
+                    f"sensor.{name}.signal_mv has at_min == at_max")
+            for what, mv in (("at_min", sig_lo_mv), ("at_max", sig_hi_mv)):
+                if mv < 0 or mv > supply_mv:
+                    raise ConfigError(
+                        f"sensor.{name}.signal_mv.{what} = {mv:g} mV is outside "
+                        f"the sensor's own 0..{supply_mv:g} mV supply")
+            sen["_at_lo"], sen["_at_hi"] = sen["at_min"], sen["at_max"]
             sen["_unit"] = sen.get("unit", "")
 
-        pin_mv = supply_mv * ratio
+            # Fault thresholds sit a margin outside the signal band, in
+            # whichever direction the band runs - an inverted sensor's
+            # band descends, and the dead zones are still at the
+            # electrical extremes, not the logical ones.
+            margin = float(adc.get("fault_margin_mv", 0))
+            lo_mv = min(sig_lo_mv, sig_hi_mv) - margin
+            hi_mv = max(sig_lo_mv, sig_hi_mv) + margin
+            sen["_fault_lo"] = counts_at(max(0.0, lo_mv))
+            sen["_fault_hi"] = counts_at(min(supply_mv, hi_mv))
+
+        # The check that matters most: the highest voltage this channel
+        # must be able to READ - the top of the fault band, not just the
+        # signal band - has to land under the ADC reference.
+        top_mv = (max(sig_lo_mv, sig_hi_mv)
+                  + (float(adc.get("fault_margin_mv", 0)) if kind != "voltage" else 0.0))
+        pin_mv = top_mv * ratio
         if pin_mv > vref + 0.5:
-            # Spell out the no-divider case separately. It is the most
-            # likely way to hit this and the most dangerous, so it must
-            # not be described as a badly-chosen divider.
             via = (f"a {div['r_top']:g}/{div['r_bottom']:g} divider" if div
                    else "NO DIVIDER AT ALL - it is wired straight to the pin")
             raise ConfigError(
-                f"sensor.{name}: a {supply_mv:g} mV sensor through "
-                f"{via} puts "
-                f"{pin_mv:.0f} mV on a pin referenced to {vref} mV. Everything "
-                f"above the reference converts to full scale, so the top "
-                f"{100 * (1 - vref / pin_mv):.0f}% of this sensor's range "
-                f"would be unreadable. Fit a divider that keeps full scale "
+                f"sensor.{name}: reading up to {top_mv:g} mV through "
+                f"{via} puts {pin_mv:.0f} mV on a pin referenced to {vref} mV. "
+                f"Everything above the reference converts to full scale, so "
+                f"the top {100 * (1 - vref / pin_mv):.0f}% of this sensor's "
+                f"range would be unreadable. Fit a divider that keeps it "
                 f"under {vref} mV.")
 
-        # Divide by the number of STEPS, not the maximum code: the data
-        # sheet's own Figure 22 defines "1 LSB ideal = AVDD / 4096" for
-        # the 12-bit ADC_1, so a pin at exactly Vref lands on code 4096,
-        # which the converter reports as its top code 4095. Using
-        # max_counts here instead would bias every reading by one code -
-        # negligible against a +/-6 LSB TUE, but wrong for a number this
-        # file exists to derive rather than guess.
-        counts = min(full, int(round((full + 1) * pin_mv / vref)))
-        if counts < 1:
-            raise ConfigError(f"sensor.{name}: full scale lands below 1 ADC count")
-        sen["_counts_at_full"] = counts
-        # How much of the ADC's range this channel actually uses. Not an
-        # error, but worth saying out loud - a channel using a third of
-        # the range is throwing away resolution for no reason.
-        sen["_use_pct"] = 100.0 * counts / full
+        sen["_counts_lo"] = counts_at(sig_lo_mv)
+        sen["_counts_hi"] = counts_at(sig_hi_mv)
+        if sen["_counts_lo"] == sen["_counts_hi"]:
+            raise ConfigError(
+                f"sensor.{name}: both ends of the signal band land on the same "
+                f"ADC code - the divider has squeezed the sensor to nothing")
+        span = abs(sen["_counts_hi"] - sen["_counts_lo"])
+        sen["_use_pct"] = 100.0 * span / full
+
+    # --- redundant pairs -------------------------------------------------
+    ratio_min = float(adc.get("redundant_slope_ratio", 1.5))
+    pairs = []
+    for name, sen in sorted(cfg["sensor"].items()):
+        partner = sen.get("redundant_with")
+        if partner is None:
+            continue
+        if partner not in cfg["sensor"]:
+            raise ConfigError(
+                f"sensor.{name}.redundant_with = '{partner}' does not exist")
+        other = cfg["sensor"][partner]
+        if other.get("redundant_with") != name:
+            raise ConfigError(
+                f"sensor.{name} says it is redundant with {partner}, but "
+                f"{partner} does not say the same about {name}")
+        if name > partner:
+            continue                      # emit each pair once
+        pairs.append((name, partner))
+
+        # THE RULE THIS SECTION EXISTS FOR. Two channels with the same
+        # transfer function detect an open circuit and nothing else: a
+        # stuck, shorted or cross-connected track reads plausibly on
+        # both, they agree, and the plausibility check passes. Real
+        # pedals ship a half-slope or inverted second track precisely so
+        # that cannot happen.
+        def slope(x):
+            d_sig = float(x["signal_mv"]["at_max"]) - float(x["signal_mv"]["at_min"])
+            return (float(x["at_max"]) - float(x["at_min"])) / d_sig
+        sa, sb = slope(sen), slope(other)
+        opposite = (sa < 0) != (sb < 0)
+        r = max(abs(sa), abs(sb)) / min(abs(sa), abs(sb))
+        if not opposite and r < ratio_min:
+            raise ConfigError(
+                f"redundant pair {name}/{partner} is not distinguishable: "
+                f"slopes differ by only {r:.2f}x and run the same direction "
+                f"(need {ratio_min}x, or opposite signs). Two channels with "
+                f"the same transfer function detect an open circuit and "
+                f"nothing else - a stuck or cross-connected track reads "
+                f"plausibly on both and the check passes. Give one a half "
+                f"slope or invert it, as production pedals do.")
+        if sen.get("unit") != other.get("unit"):
+            raise ConfigError(
+                f"redundant pair {name}/{partner} report different units "
+                f"({sen.get('unit')} vs {other.get('unit')}) - they cannot be "
+                f"compared")
+    cfg["_redundant_pairs"] = pairs
 
     return checked
 
@@ -736,9 +819,19 @@ def emit_sensors(cfg):
     out.append("    sensor_kind_t       kind;")
     out.append("    /* linear/voltage: engineering value at 0 counts and at")
     out.append("     * counts_at_full, which is derived from the divider. */")
-    out.append("    int32_t             at_zero;")
-    out.append("    int32_t             at_full;")
-    out.append("    uint16_t            counts_at_full;")
+    out.append("    /* linear/voltage: the engineering values at the two ends")
+    out.append("     * of the sensor's real signal band, and where that band")
+    out.append("     * lands in ADC codes. counts_lo may be GREATER than")
+    out.append("     * counts_hi - an inverted sensor falls as the measured")
+    out.append("     * quantity rises, which is a real and common pattern. */")
+    out.append("    int32_t             at_lo;")
+    out.append("    int32_t             at_hi;")
+    out.append("    uint16_t            counts_lo;")
+    out.append("    uint16_t            counts_hi;")
+    out.append("    /* Outside these the reading is not a value, it is a")
+    out.append("     * broken wire or a short. */")
+    out.append("    uint16_t            fault_lo;")
+    out.append("    uint16_t            fault_hi;")
     out.append("    /* thermistor: pull-up and the curve to walk. */")
     out.append("    uint32_t            pullup_ohms;")
     out.append("    const curve_point_t *curve;")
@@ -756,14 +849,39 @@ def emit_sensors(cfg):
         sen = cfg["sensor"][n]
         if sen["type"] == "thermistor":
             cu = sen["curve"].upper()
-            out.append(f"    /* {n} */ {{ \"{n}\", SENSOR_KIND_THERMISTOR, 0, 0, 0,")
+            out.append(f"    /* {n} */ {{ \"{n}\", SENSOR_KIND_THERMISTOR,")
+            out.append(f"        0, 0, 0u, 0u, 0u, {int(cfg['adc']['max_counts'])}u,")
             out.append(f"        {sen['pullup_ohms']}u, CURVE_{cu}, CURVE_{cu}_COUNT }},")
         else:
             kind = "SENSOR_KIND_VOLTAGE" if sen["type"] == "voltage" else "SENSOR_KIND_LINEAR"
-            out.append(f"    /* {n:<5} {sen['_unit']:>6}, uses {sen['_use_pct']:.0f}% of ADC range */")
-            out.append(f"    {{ \"{n}\", {kind}, {sen['_at_zero']}, {sen['_at_full']}, "
-                       f"{sen['_counts_at_full']}u, 0u, 0, 0 }},")
+            out.append(f"    /* {n:<5} {sen['_unit']:>6}, band {sen['_counts_lo']}..{sen['_counts_hi']} "
+                       f"counts, uses {sen['_use_pct']:.0f}% of ADC range */")
+            out.append(f"    {{ \"{n}\", {kind}, {sen['_at_lo']}, {sen['_at_hi']}, "
+                       f"{sen['_counts_lo']}u, {sen['_counts_hi']}u, "
+                       f"{sen['_fault_lo']}u, {sen['_fault_hi']}u, 0u, 0, 0 }},")
     out.append("};")
+    out.append("")
+    out.append("/* ---- Redundant pairs ------------------------------------------")
+    out.append(" * Channels that measure the same physical quantity twice, so a")
+    out.append(" * single failure can be caught by disagreement. The generator")
+    out.append(" * has already refused any pair whose transfer functions are not")
+    out.append(" * distinguishable - identical channels detect an open circuit")
+    out.append(" * and nothing else. */")
+    out.append("typedef struct {")
+    out.append("    sensor_id_t a;")
+    out.append("    sensor_id_t b;")
+    out.append("    int32_t     tolerance;   /* in the pair's own unit */")
+    out.append("} redundant_pair_t;")
+    out.append("")
+    pairs = cfg.get("_redundant_pairs", [])
+    tol = int(cfg["adc"].get("redundant_tolerance", 0))
+    out.append(f"#define REDUNDANT_PAIR_COUNT {len(pairs)}u")
+    if pairs:
+        out.append("static const redundant_pair_t REDUNDANT_PAIRS"
+                   "[REDUNDANT_PAIR_COUNT] = {")
+        for a, b in pairs:
+            out.append(f"    {{ SENSOR_{a.upper()}, SENSOR_{b.upper()}, {tol} }},")
+        out.append("};")
     out.append("")
     out.append("#endif /* SENSOR_DEFS_H */")
 

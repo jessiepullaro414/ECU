@@ -265,12 +265,31 @@ def build_firmware():
     return True
 
 
+def run_host_tests():
+    """Runs the native host tests.
+
+    The cross-compiler proves the firmware COMPILES; only these prove any
+    of it computes the right answer. They are part of the build rather
+    than an optional extra because every serious bug this project has
+    found in its own firmware - an air-mass overflow, a cylinder
+    off-by-one that wrote into the flash boot sector, a scheduling
+    window that silently dropped two of eight cylinders - was invisible
+    to both review and the compiler, and visible here immediately."""
+    runner = os.path.join(FW_DIR, "tools", "run_host_tests.py")
+    if not os.path.exists(runner):
+        print("\n=== Host tests ===\n  (no runner found - skipped)")
+        return True
+    return run_step("Host tests", [sys.executable, runner], FW_DIR)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pcb-only", action="store_true")
     parser.add_argument("--firmware-only", action="store_true")
     parser.add_argument("--skip-route", action="store_true",
                          help="Skip the real (slow) FreeRouting autorouting pass")
+    parser.add_argument("--skip-host-tests", action="store_true",
+                         help="Skip the native host tests (ecu-firmware/test/)")
     args = parser.parse_args()
 
     do_pcb = not args.firmware_only
@@ -281,6 +300,8 @@ def main():
         results["PCB"] = build_pcb(args.skip_route)
     if do_fw:
         results["Firmware"] = build_firmware()
+        if not args.skip_host_tests:
+            results["Host tests"] = run_host_tests()
 
     print("\n" + "=" * 40)
     print("BUILD SUMMARY")
